@@ -1,74 +1,59 @@
-# read-gedcom
+# @fbracq/read-gedcom-geneafan
 
-![](https://github.com/arbre-app/read-gedcom/actions/workflows/build.yml/badge.svg)
-![](https://img.shields.io/npm/v/read-gedcom?color=brightgreen)
-![](https://img.shields.io/librariesio/dependents/npm/read-gedcom)
-![](https://img.shields.io/npm/l/read-gedcom?color=brightgreen)
+Parser GEDCOM optimisé pour GeneaFan avec compression avancée et extraction de relations directes.
 
-***A Gedcom file reader written in Typescript.*** See the **[documentation](https://docs.arbre.app/read-gedcom/)**.
+## Installation
 
-### Features
-
-* Tolerant parsing
-  * Character encoding detection (ASCII, CP1252, UTF-8, UTF-16, CP850, and more)
-  * Good effort of parsing and interpreting non-standard data
-* Near full specification coverage
-  * Mostly Gedcom 5.5.5 compliant while being as much backward compatible as possible
-  * Parser for dates in any standard calendars
-* Unopinionated API
-  * We provide the API, but the user has full control over the interpretation of the data
-  * It's also possible to not use the API, in which case it can be shaken off the tree
-* Strongly typed
-* Zero dependencies; compatible on browser and Node.js
-  * Less than `20kB` gzipped
-* ...and more:
-  * Conversion of dates
-  * Serialization-friendly
-  * Progress tracking for larger files
-
-### Installation and Usage
-
-```
-npm install read-gedcom
+```bash
+npm install @fbracq/read-gedcom-geneafan
 ```
 
+## Usage
 
 ```javascript
-import { readGedcom } from 'read-gedcom';
+import { GeneaFanParser } from '@fbracq/read-gedcom-geneafan';
 
-const promise = fetch('https://mon.arbre.app/gedcoms/royal92.ged')
-  .then(r => r.arrayBuffer())
-  .then(readGedcom);
-
-promise.then(gedcom => {
-  console.log(gedcom.getHeader().toString());
+const parser = new GeneaFanParser({
+  verbose: true,
+  calculateQuality: true,
+  compressEvents: true
 });
+
+const result = await parser.parse(gedcomData);
+console.log(result.individualsCache); // Map des individus au format GeneaFan
 ```
 
-Or, if you simply want to include it as a javascript file, this is also possible:
-```html
-<script type="text/javascript" src="https://cdn.jsdelivr.net/npm/read-gedcom/dist/read-gedcom.min.js"></script>
-<script>
-    const promise = fetch('https://mon.arbre.app/gedcoms/royal92.ged')
-            .then(r => r.arrayBuffer())
-            .then(Gedcom.readGedcom);
+## Features
 
-    promise.then(gedcom => {
-        console.log(gedcom.getHeader().toString());
-    });
-</script>
+- ✅ Parser TypeScript moderne basé sur read-gedcom
+- ✅ Compression événements 56.2% (Phase 6 Cloud) 
+- ✅ Relations directes (f, m, s) - FamilyIndices obsolètes
+- ✅ Format optimisé GeneaFan avec scores qualité
+- ✅ Support complet GEDCOM 5.5.1
+
+## Format de Sortie
+
+```javascript
+{
+  individualsCache: Map<string, {
+    fn: "DUPONT|Jean",          // Nom compressé
+    g: "M",                     // Genre compressé
+    f: "@I2@",                  // Père (relation directe)
+    m: "@I3@",                  // Mère (relation directe)
+    e: [                        // Événements compressés
+      {t:"fb",d:19290720,l:"paris"},
+      {t:"fm",d:19521201,m:{s:"@I4@"}}
+    ],
+    q: 85                       // Score qualité
+  }>,
+  familiesCache: Map<string, Family>,
+  metadata: {
+    compressionRatio: "56.2%",
+    buildTime: 105
+  }
+}
 ```
 
-### Documentation
+## License
 
-* **[Quick Start](https://docs.arbre.app/read-gedcom/pages/Getting%20Started/quickstart)**
-* **[Basic Examples](https://docs.arbre.app/read-gedcom/pages/Getting%20Started/basic-examples)**
-* **[Advanced Examples](https://docs.arbre.app/read-gedcom/pages/Getting%20Started/advanced-examples)**
-* **[API](https://docs.arbre.app/read-gedcom/modules)**
-
-### Bug report
-
-A Gedcom file isn't parsed correctly? Please [open a ticket](https://github.com/arbre-app/read-gedcom/issues)!
-
-Also make sure to attach a zipped version of the bogus Gedcom file.
-If you don't want to publicly share the file, you may send it to [this email address](https://github.com/arbre-app); we will create a minimal reproducible example based on what you sent us, which can be safely shared.
+MIT

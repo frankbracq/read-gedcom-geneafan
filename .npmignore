@@ -1,0 +1,42 @@
+# Development
+dev/
+tests/
+scripts/
+*.test.js
+test-*.js
+compare*.js
+
+# Logs
+*.log
+npm-debug.log*
+
+# Dependencies  
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation locale
+docs/
+pages/
+*.md
+!README.md
+PUBLISH_NPM_GUIDE.md
+
+# Build artifacts
+*.tgz
+
+# Git
+.git/
+.gitignore
+
+# Config files
+tsconfig*.json
+webpack.config.ts
+typedoc.json
+patches/
