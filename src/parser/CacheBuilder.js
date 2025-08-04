@@ -6,6 +6,7 @@
 import { compressEventArray } from '../compression/eventCompression.js';
 import { compressGeneaFanIndividual, compressFields } from '../compression/fieldCompression.js';
 import { calculateQualityScore, calculateCacheQualityStats } from '../utils/qualityScoring.js';
+import { normalizePlace } from '../utils/geoUtils.js';
 
 export class CacheBuilder {
     constructor(options = {}) {
@@ -314,17 +315,12 @@ export class CacheBuilder {
     }
     
     /**
-     * Normalise un lieu géographique
+     * Normalise un lieu géographique avec parsePlaceParts + logique GeneaFan
      * @private
      */
     _normalizePlace(place) {
-        if (!place || typeof place !== 'string') return null;
-        
-        // Normalisation basique (à améliorer avec familyTownsStore)
-        return place.toLowerCase()
-            .replace(/[^a-z0-9\s]/g, '')
-            .replace(/\s+/g, '-')
-            .substring(0, 50);
+        // Utilise le module geoUtils avec parsePlaceParts de read-gedcom
+        return normalizePlace(place);
     }
     
     /**
