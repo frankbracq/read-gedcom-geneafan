@@ -6,7 +6,7 @@
 import { compressEventArray } from '../compression/eventCompression.js';
 import { compressGeneaFanIndividual, compressFields } from '../compression/fieldCompression.js';
 import { calculateQualityScore, calculateCacheQualityStats } from '../utils/qualityScoring.js';
-import { normalizePlace } from '../utils/geoUtils.js';
+import { normalizePlace, extractPlaceComponents } from '../utils/geoUtils.js';
 
 export class CacheBuilder {
     constructor(options = {}) {
@@ -319,6 +319,24 @@ export class CacheBuilder {
      * @private
      */
     _normalizePlace(place) {
+        if (!place || typeof place !== 'string') return null;
+        
+        // 🔍 LOGGING DÉTAILLÉ: Traçabilité complète du traitement des lieux
+        if (this.options.verbose || this.options.logPlaces) {
+            const components = extractPlaceComponents(place);
+            const normalized = normalizePlace(place);
+            
+            console.log('🗺️ [CacheBuilder] Traitement lieu:');
+            console.log(`   📍 Source GEDCOM: "${place}"`);
+            console.log(`   🏘️  Ville extraite: "${components.town || 'N/A'}"`);
+            console.log(`   📮 Code postal: ${components.postalCode || 'N/A'}`);
+            console.log(`   🗺️  Département: ${components.department || 'N/A'}`);
+            console.log(`   🌍 Région: ${components.region || 'N/A'}`);
+            console.log(`   🌐 Pays: ${components.country || 'N/A'}`);
+            console.log(`   🔑 Clé finale: "${normalized}"`);
+            console.log('   ─────────────────────────────────');
+        }
+        
         // Utilise le module geoUtils avec parsePlaceParts de read-gedcom
         return normalizePlace(place);
     }

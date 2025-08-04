@@ -7,6 +7,9 @@
 
 import { parsePlaceParts } from 'read-gedcom';
 
+// 🚀 OPTIMISATION: Cache de normalisation pour éviter les recalculs
+const normalizationCache = new Map();
+
 /**
  * Nettoie un nom de ville en extrayant la partie principale
  * Porte depuis GeneaFan/assets/scripts/utils/geo.js
@@ -102,7 +105,7 @@ export function normalizeGeoString(inputString) {
 }
 
 /**
- * Pipeline complet de normalisation des lieux
+ * Pipeline complet de normalisation des lieux AVEC CACHE
  * Utilise parsePlaceParts de read-gedcom + logique GeneaFan
  * 
  * @param {string} placeString - Chaîne de lieu brute du GEDCOM
@@ -121,33 +124,103 @@ export function normalizeGeoString(inputString) {
 export function normalizePlace(placeString) {
     if (!placeString || typeof placeString !== 'string') return null;
     
+    // 🚀 OPTIMISATION: Vérifier le cache d'abord
+    if (normalizationCache.has(placeString)) {
+        return normalizationCache.get(placeString);
+    }
+    
     try {
         // 1. Utiliser parsePlaceParts de read-gedcom pour décomposer
         const parts = parsePlaceParts(placeString);
-        if (!parts || parts.length === 0) return null;
+        if (!parts || parts.length === 0) {
+            normalizationCache.set(placeString, null);
+            return null;
+        }
         
         // 2. Extraire la première partie (ville)
         const townPart = parts[0];
-        if (!townPart || !townPart.trim()) return null;
+        if (!townPart || !townPart.trim()) {
+            normalizationCache.set(placeString, null);
+            return null;
+        }
         
         // 3. Pipeline de nettoyage GeneaFan
         const cleanTown = cleanTownName(townPart);
-        if (!cleanTown) return null;
+        if (!cleanTown) {
+            normalizationCache.set(placeString, null);
+            return null;
+        }
         
         const formattedTown = formatTownName(cleanTown);
-        if (!formattedTown) return null;
+        if (!formattedTown) {
+            normalizationCache.set(placeString, null);
+            return null;
+        }
         
         const normalizedKey = normalizeGeoString(formattedTown);
         
         // 4. Validation finale
-        if (!normalizedKey || normalizedKey.length === 0) return null;
+        if (!normalizedKey || normalizedKey.length === 0) {
+            normalizationCache.set(placeString, null);
+            return null;
+        }
         
+        // 🚀 OPTIMISATION: Stocker dans le cache
+        normalizationCache.set(placeString, normalizedKey);
         return normalizedKey;
         
     } catch (error) {
         console.warn(`[geoUtils] Erreur normalisation lieu "${placeString}":`, error.message);
+        normalizationCache.set(placeString, null); // Cache même les erreurs
         return null;
     }
+}
+
+/**
+ * 🚀 NOUVEAU: Traitement en lot pour optimiser les performances
+ * Normalise plusieurs lieux d'un coup avec déduplication automatique
+ * 
+ * @param {string[]} places - Array de chaînes de lieux
+ * @returns {Map<string, string|null>} - Map(placeString → normalizedKey)
+ */
+export function normalizePlacesBatch(places) {
+    const results = new Map();
+    const uniquePlaces = [...new Set(places)]; // Déduplication
+    
+    console.log(`🚀 [geoUtils] Normalisation batch: ${uniquePlaces.length} lieux uniques`);
+    
+    const startTime = Date.now();
+    for (const place of uniquePlaces) {
+        results.set(place, normalizePlace(place));
+    }
+    
+    const duration = Date.now() - startTime;
+    const cacheHits = places.length - uniquePlaces.length;
+    
+    console.log(`✅ [geoUtils] Batch terminé: ${duration}ms, ${cacheHits} hits cache, ${normalizationCache.size} entrées`);
+    
+    return results;
+}
+
+/**
+ * 🚀 NOUVEAU: Réinitialise le cache de normalisation
+ * Utile pour les tests ou la gestion mémoire
+ */
+export function clearNormalizationCache() {
+    const size = normalizationCache.size;
+    normalizationCache.clear();
+    console.log(`🗑️ [geoUtils] Cache normalization vidé: ${size} entrées supprimées`);
+}
+
+/**
+ * 📊 NOUVEAU: Statistiques du cache
+ */
+export function getCacheStats() {
+    return {
+        size: normalizationCache.size,
+        entries: [...normalizationCache.entries()].slice(0, 5), // Premier 5 pour debug
+        hitRate: normalizationCache.size > 0 ? 'Disponible après premier batch' : 'Pas encore utilisé'
+    };
 }
 
 /**

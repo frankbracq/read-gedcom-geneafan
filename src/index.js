@@ -15,6 +15,7 @@ import { GeneaFanParser } from './parser/GeneaFanParser.js';
  * @param {boolean} options.extractNotes - Extraire les notes (défaut: true)
  * @param {boolean} options.extractSources - Extraire les sources (défaut: true)
  * @param {boolean} options.calculateQuality - Calculer le score de qualité (défaut: true)
+ * @param {boolean} options.logPlaces - Activer le logging détaillé des lieux (défaut: false)
  * @param {Function} options.onProgress - Callback de progression (phase, progress)
  * @returns {Promise<Object>} Résultat avec toutes les caches
  */
