@@ -135,6 +135,9 @@ export class DataExtractor {
             // Événements complets
             events: allEvents,
             
+            // 🚀 ARCHITECTURE SOLIDE : Attacher l'objet read-gedcom pour APIs natives
+            readGedcomIndividual: individualSelection,
+            
             // Métadonnées
             metadata: {
                 extractedVia: 'read-gedcom-direct-apis',

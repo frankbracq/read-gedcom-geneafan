@@ -177,10 +177,19 @@ export class CacheBuilder {
                       individual.sex === 'female' ? 'F' : 'U';
         }
         
-        // === RELATIONS DIRECTES (cœur de l'optimisation) ===
-        // Phase 10: Relations via champs compressés
+        // === RELATIONS DIRECTES (pré-extraites par DataExtractor) ===
+        // 🚀 ARCHITECTURE SOLIDE: Données extraites via 100% APIs read-gedcom natives
+        
+        // Père et mère (extraits par DataExtractor._extractDirectFamilyRelations)
         if (individual.fatherId) result.f = individual.fatherId;
         if (individual.motherId) result.m = individual.motherId;
+        
+        // Conjoints (extraits par DataExtractor._extractDirectFamilyRelations)
+        if (individual.spouseIds && individual.spouseIds.length > 0) {
+            result.s = individual.spouseIds;
+        }
+        
+        // Siblings (extraits par DataExtractor._extractDirectFamilyRelations)
         if (individual.siblingIds && individual.siblingIds.length > 0) {
             result.b = individual.siblingIds;
         }
