@@ -47,6 +47,7 @@ console.log(result.individualsCache); // Map des individus au format GeneaFan
     q: 85                       // Score qualité
   }>,
   familiesCache: Map<string, Family>,
+  readGedcomData: RootSelection, // 🚀 NOUVEAU: Objets read-gedcom avec APIs natives
   metadata: {
     compressionRatio: "56.2%",
     buildTime: 105

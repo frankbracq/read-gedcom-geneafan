@@ -58,6 +58,9 @@ export class GeneaFanParser {
             this._log(`✅ Parsing terminé en ${duration}ms`);
             this._log(`📊 ${result.individualsCache.size} individus, ${result.familiesCache.size} familles`);
             
+            // 🚀 NOUVEAU: Exposer les objets read-gedcom originaux pour APIs natives
+            result.readGedcomData = rootSelection;
+            
             return result;
             
         } catch (error) {
