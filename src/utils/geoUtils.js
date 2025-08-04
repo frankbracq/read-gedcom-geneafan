@@ -225,6 +225,7 @@ export function getCacheStats() {
 
 /**
  * Extrait les composants d'un lieu (ville, département, pays, etc.)
+ * 🚀 LOGIQUE SOPHISTIQUÉE : Porte depuis placeProcessor de GeneaFan
  * 
  * @param {string} placeString - Chaîne de lieu brute du GEDCOM
  * @returns {Object} - Composants du lieu
@@ -242,6 +243,7 @@ export function extractPlaceComponents(placeString) {
     }
     
     try {
+        // 1. Utiliser parsePlaceParts pour décomposer
         const parts = parsePlaceParts(placeString);
         if (!parts || parts.length === 0) {
             return {
@@ -254,44 +256,78 @@ export function extractPlaceComponents(placeString) {
             };
         }
         
-        // Extraction intelligente basée sur la position et le contenu
-        const town = parts[0] || null;
-        let postalCode = null;
-        let department = null;
-        let region = null;
-        let country = null;
+        // 2. Initialisation avec première partie comme ville
+        const result = {
+            town: parts[0] ? formatTownName(parts[0]) : null,
+            postalCode: null,
+            department: null,
+            region: null,
+            country: null,
+            normalizedKey: normalizePlace(placeString)
+        };
         
-        // Détecter code postal (5 chiffres)
-        for (let i = 1; i < parts.length; i++) {
-            const part = parts[i].trim();
-            if (/^\d{5}$/.test(part)) {
-                postalCode = part;
-                break;
+        // 3. 🔍 DÉTECTION INTELLIGENTE DU PAYS (logique placeProcessor._findCountry)
+        const normalizedSegments = parts.map(part => normalizeGeoString(part));
+        const countryMatch = _findCountryInSegments(normalizedSegments);
+        if (countryMatch) {
+            result.country = countryMatch.name.FR;
+        }
+        
+        // 4. 🇫🇷 TRAITEMENT SPÉCIAL FRANÇAIS (logique placeProcessor._processFrenchDepartement)
+        if (!result.country || result.country === "France") {
+            const departmentInfo = _extractFrenchDepartment(placeString);
+            if (departmentInfo) {
+                result.department = departmentInfo.name;
+                result.postalCode = departmentInfo.postalCode;
             }
         }
         
-        // Le dernier élément est souvent le pays
-        if (parts.length > 1) {
-            country = parts[parts.length - 1] || null;
+        // 5. 🔍 DÉTECTION CODE POSTAL STANDARD (5 chiffres)
+        if (!result.postalCode) {
+            for (const part of parts) {
+                if (/^\d{5}$/.test(part.trim())) {
+                    result.postalCode = part.trim();
+                    break;
+                }
+            }
         }
         
-        // Les éléments du milieu sont département/région
-        if (parts.length > 2) {
-            department = parts[parts.length - 2] || null;
+        // 6. 📍 FALLBACK DÉPARTEMENT/RÉGION (logique placeProcessor._processSubdivisionAndDepartement)
+        if (!result.department && parts.length >= 2) {
+            // Filtrer les segments vides et les doublons/répétitions
+            const cleanParts = parts.filter(p => p && p.trim() !== '');
+            const uniqueParts = [...new Set(cleanParts.map(p => normalizeGeoString(p)))];
+            
+            // Ne pas utiliser le pays détecté comme département
+            const nonCountryParts = cleanParts.filter(part => {
+                const normalized = normalizeGeoString(part);
+                
+                // Vérifier si c'est un pays ou une variante de pays
+                for (const country of _getCountriesList()) {
+                    if (country.variants?.includes(normalized) || 
+                        country.territories?.includes(normalized)) {
+                        return false;
+                    }
+                }
+                return true;
+            });
+            
+            if (nonCountryParts.length >= 2) {
+                // Exclure la ville (première partie)
+                const potentialDepartments = nonCountryParts.slice(1);
+                
+                if (potentialDepartments.length >= 2) {
+                    // Format: Ville, Département, Région, [Pays]
+                    result.department = potentialDepartments[0] || null;
+                    result.region = potentialDepartments[1] || null;
+                } else if (potentialDepartments.length === 1) {
+                    // Format: Ville, Département, [Pays]
+                    result.department = potentialDepartments[0] || null;
+                }
+            }
         }
         
-        if (parts.length > 3) {
-            region = parts[parts.length - 3] || null;
-        }
-        
-        return {
-            town: town ? formatTownName(town) : null,
-            postalCode,
-            department,
-            region,
-            country,
-            normalizedKey: normalizePlace(placeString)
-        };
+        return result;
         
     } catch (error) {
         console.warn(`[geoUtils] Erreur extraction composants "${placeString}":`, error.message);
@@ -304,4 +340,172 @@ export function extractPlaceComponents(placeString) {
             normalizedKey: null
         };
     }
+}
+
+/**
+ * 🔍 FONCTION INTERNE: Trouve un pays dans les segments normalisés
+ * 🚀 AMÉLIORÉE: Gère variantes, abréviations, territoires
+ */
+function _findCountryInSegments(normalizedSegments) {
+    // Filtrer les segments vides
+    const cleanSegments = normalizedSegments.filter(s => s && s.trim() !== '');
+    
+    // Utiliser la liste partagée des pays
+    const countries = _getCountriesList();
+    
+    // Recherche directe dans les variantes
+    for (const country of countries) {
+        for (const segment of cleanSegments) {
+            // Vérifier les variantes principales
+            if (country.variants.includes(segment)) {
+                return country;
+            }
+            
+            // Vérifier les territoires (donnent le pays parent)
+            if (country.territories && country.territories.includes(segment)) {
+                return country;
+            }
+        }
+    }
+    
+    return null;
+}
+
+/**
+ * 🔍 FONCTION HELPER: Retourne la liste des pays pour réutilisation
+ */
+function _getCountriesList() {
+    return [
+        // France
+        { 
+            name: { FR: "France" }, 
+            variants: ["france", "fr", "french", "francais"] 
+        },
+        
+        // États-Unis avec variantes et territoires
+        { 
+            name: { FR: "États-Unis" }, 
+            variants: ["usa", "us", "etats-unis", "united-states", "america", "amerique"],
+            territories: ["puerto-rico", "porto-rico", "hawaii", "alaska", "guam", "virgin-islands"]
+        },
+        
+        // Canada
+        { 
+            name: { FR: "Canada" }, 
+            variants: ["canada", "ca", "canadien"] 
+        },
+        
+        // Royaume-Uni avec territoires
+        { 
+            name: { FR: "Royaume-Uni" }, 
+            variants: ["royaume-uni", "uk", "united-kingdom", "great-britain", "england", "scotland", "wales", "northern-ireland", "angleterre", "ecosse", "galles"],
+            territories: ["gibraltar", "jersey", "guernsey", "isle-of-man"]
+        },
+        
+        // Autres pays européens
+        { 
+            name: { FR: "Allemagne" }, 
+            variants: ["allemagne", "germany", "deutschland", "de"] 
+        },
+        { 
+            name: { FR: "Belgique" }, 
+            variants: ["belgique", "belgium", "be"] 
+        },
+        { 
+            name: { FR: "Suisse" }, 
+            variants: ["suisse", "switzerland", "swiss", "schweiz", "ch"] 
+        },
+        { 
+            name: { FR: "Italie" }, 
+            variants: ["italie", "italy", "italia", "it"] 
+        },
+        { 
+            name: { FR: "Espagne" }, 
+            variants: ["espagne", "spain", "espana", "es"] 
+        },
+        { 
+            name: { FR: "Pays-Bas" }, 
+            variants: ["pays-bas", "netherlands", "holland", "nl"] 
+        },
+        
+        // Autres continents
+        { 
+            name: { FR: "Maroc" }, 
+            variants: ["maroc", "morocco", "ma"] 
+        },
+        { 
+            name: { FR: "Algérie" }, 
+            variants: ["algerie", "algeria", "dz"] 
+        },
+        { 
+            name: { FR: "Tunisie" }, 
+            variants: ["tunisie", "tunisia", "tn"] 
+        }
+    ];
+}
+
+/**
+ * 🇫🇷 FONCTION INTERNE: Extrait département français
+ * Porte depuis placeProcessor._processFrenchDepartement() + _extractAndSetDepartement()
+ */
+function _extractFrenchDepartment(original) {
+    // Regex placeProcessor: \b\d{5}\b|\(\d{2}\)
+    // - \b\d{5}\b : code postal (5 chiffres)  
+    // - \(\d{2}\) : code département entre parenthèses comme "(59)"
+    const codeRegex = /\b\d{5}\b|\(\d{2}\)/;
+    const codeMatch = original.match(codeRegex);
+    
+    if (!codeMatch) return null;
+    
+    let departmentCode = codeMatch[0];
+    let postalCode = null;
+    
+    if (departmentCode.startsWith('(')) {
+        // Format "(59)" → département 59
+        departmentCode = departmentCode.replace(/[()]/g, "");
+    } else if (departmentCode.length === 5) {
+        // Format "59310" → département 59, code postal 59310
+        postalCode = departmentCode;
+        departmentCode = departmentCode.substring(0, 2);
+    }
+    
+    // Mapping code → nom (simplifié des principaux départements)
+    const deptMapping = {
+        "01": "Ain", "02": "Aisne", "03": "Allier", "04": "Alpes-de-Haute-Provence",
+        "05": "Hautes-Alpes", "06": "Alpes-Maritimes", "07": "Ardèche", "08": "Ardennes",
+        "09": "Ariège", "10": "Aube", "11": "Aude", "12": "Aveyron",
+        "13": "Bouches-du-Rhône", "14": "Calvados", "15": "Cantal", "16": "Charente",
+        "17": "Charente-Maritime", "18": "Cher", "19": "Corrèze", "21": "Côte-d'Or",
+        "22": "Côtes-d'Armor", "23": "Creuse", "24": "Dordogne", "25": "Doubs",
+        "26": "Drôme", "27": "Eure", "28": "Eure-et-Loir", "29": "Finistère",
+        "30": "Gard", "31": "Haute-Garonne", "32": "Gers", "33": "Gironde",
+        "34": "Hérault", "35": "Ille-et-Vilaine", "36": "Indre", "37": "Indre-et-Loire",
+        "38": "Isère", "39": "Jura", "40": "Landes", "41": "Loir-et-Cher",
+        "42": "Loire", "43": "Haute-Loire", "44": "Loire-Atlantique", "45": "Loiret",
+        "46": "Lot", "47": "Lot-et-Garonne", "48": "Lozère", "49": "Maine-et-Loire",
+        "50": "Manche", "51": "Marne", "52": "Haute-Marne", "53": "Mayenne",
+        "54": "Meurthe-et-Moselle", "55": "Meuse", "56": "Morbihan", "57": "Moselle",
+        "58": "Nièvre", "59": "Nord", "60": "Oise", "61": "Orne",
+        "62": "Pas-de-Calais", "63": "Puy-de-Dôme", "64": "Pyrénées-Atlantiques",
+        "65": "Hautes-Pyrénées", "66": "Pyrénées-Orientales", "67": "Bas-Rhin",
+        "68": "Haut-Rhin", "69": "Rhône", "70": "Haute-Saône", "71": "Saône-et-Loire",
+        "72": "Sarthe", "73": "Savoie", "74": "Haute-Savoie", "75": "Paris",
+        "76": "Seine-Maritime", "77": "Seine-et-Marne", "78": "Yvelines",
+        "79": "Deux-Sèvres", "80": "Somme", "81": "Tarn", "82": "Tarn-et-Garonne",
+        "83": "Var", "84": "Vaucluse", "85": "Vendée", "86": "Vienne",
+        "87": "Haute-Vienne", "88": "Vosges", "89": "Yonne", "90": "Territoire de Belfort",
+        "91": "Essonne", "92": "Hauts-de-Seine", "93": "Seine-Saint-Denis",
+        "94": "Val-de-Marne", "95": "Val-d'Oise"
+    };
+    
+    const departmentName = deptMapping[departmentCode];
+    if (departmentName) {
+        return {
+            name: departmentName,
+            code: departmentCode,
+            postalCode: postalCode
+        };
+    }
+    
+    return null;
 }
