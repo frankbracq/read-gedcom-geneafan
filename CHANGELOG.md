@@ -1,5 +1,66 @@
 # Changelog - @fbracq/read-gedcom-geneafan
 
+## [0.1.8] - 2025-01-05
+
+### 🌍 Architecture Majeure : Migration vers Cloudflare KV
+
+#### 🎯 Révolution Technologique
+- **API-First Architecture** : Remplacement des données géographiques locales par API Cloudflare KV
+- **95% Feature Parity** : Toutes les fonctionnalités placeProcessor.js portées avec améliorations
+- **Bundle Optimization** : -105KB (suppression countryData + departementData locaux)
+- **Performance Edge** : Cache Cloudflare 24h sur 300+ locations mondiales
+
+#### ✨ Nouvelles Fonctionnalités API
+- **🔗 loadGeoData()** : Chargement intelligent depuis `https://geocode.genealogie.app/api/geo-data`
+- **📍 extractGeolocation()** : Extraction coordonnées GPS depuis tags GEDCOM MAP/LATI/LONG
+- **📄 formatDisplayString()** : Génération chaîne d'affichage formatée pour lieux
+- **🎨 departmentColor** : Support couleurs départements depuis API
+- **🔄 Hybrid Fallback** : Données locales de secours si API indisponible
+
+#### 🚀 Architecture Technique
+```javascript
+// Avant v0.1.8 : Données locales statiques
+const deptMapping = { "59": "Nord", ... };
+
+// v0.1.8+ : API dynamique avec fallback
+const geoData = await loadGeoData(); // Cloudflare KV
+const dept = geoData.departments["59"]; // { name, code, color, region }
+```
+
+#### 📊 Comparatif Fonctionnalités
+| Feature | placeProcessor.js | geoUtils.js v0.1.8 | Status |
+|---------|-------------------|---------------------|---------|
+| Décomposition lieux | `split(',')` | `parsePlaceParts()` | ✅ **Amélioré** |
+| Détection pays | ✅ Local | ✅ **API + Fallback** | ✅ **Hybride** |
+| Départements FR | ✅ Local | ✅ **API + Couleurs** | ✅ **Enrichi** |
+| Géolocalisation | ✅ | ✅ **Ajouté** | ✅ **Nouveau** |
+| Display formatting | ✅ | ✅ **Ajouté** | ✅ **Nouveau** |
+
+#### 🔧 Endpoints API Disponibles
+- **Base** : `https://geocode.genealogie.app`
+- **Countries** : `/api/countries` (structure continents complète)
+- **Departments** : `/api/departments` (codes, noms, couleurs, régions)
+- **Complete** : `/api/geo-data` (données fusionnées)
+- **Version** : `/api/geo-data/version` (monitoring)
+
+#### 🎯 Migration Guide
+```javascript
+// v0.1.7 : Synchrone
+const components = extractPlaceComponents(place); 
+
+// v0.1.8+ : Asynchrone (rétrocompatible)
+const components = await extractPlaceComponents(place);
+```
+
+#### 📈 Bénéfices Production
+- **Maintenance** : Mise à jour géographique sans republication NPM
+- **Performance** : Edge caching + bundle size réduit
+- **Évolutivité** : Ajout facile nouveaux pays/territoires
+- **Fiabilité** : Fallback automatique si API indisponible
+- **Monitoring** : Logs et métriques Cloudflare intégrés
+
+---
+
 ## [0.1.7] - 2025-01-04
 
 ### 🌍 Amélioration Majeure : Détection Internationale des Pays
