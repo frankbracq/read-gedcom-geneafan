@@ -592,6 +592,8 @@ export class CacheBuilder {
     _collectUniquePlaces(cache) {
         const uniquePlaces = {};
         
+        this._log('🔍 Collecte des lieux uniques...');
+        
         for (const individual of cache.values()) {
             if (individual.individualTowns) {
                 individual.individualTowns.forEach(townKey => {
@@ -609,6 +611,8 @@ export class CacheBuilder {
                 });
             }
         }
+        
+        this._log(`📊 ${Object.keys(uniquePlaces).length} lieux uniques trouvés`);
         
         return uniquePlaces;
     }
