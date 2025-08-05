@@ -10,6 +10,49 @@ import { parsePlaceParts } from 'read-gedcom';
 // 🚀 OPTIMISATION: Cache de normalisation pour éviter les recalculs
 const normalizationCache = new Map();
 
+// 🌐 Cache pour les données géographiques depuis l'API
+let geoDataCache = null;
+let geoDataLoadPromise = null;
+
+/**
+ * Charge les données géographiques depuis l'API Cloudflare KV
+ * @returns {Promise<{countries: Object, departments: Object}>}
+ */
+async function loadGeoData() {
+    // Si déjà en cache, retourner directement
+    if (geoDataCache) return geoDataCache;
+    
+    // Si chargement en cours, attendre la promesse existante
+    if (geoDataLoadPromise) return geoDataLoadPromise;
+    
+    // Lancer le chargement
+    geoDataLoadPromise = (async () => {
+        try {
+            const response = await fetch('https://geocode.genealogie.app/api/geo-data');
+            if (!response.ok) {
+                throw new Error(`Failed to load geo data: ${response.status}`);
+            }
+            
+            const data = await response.json();
+            geoDataCache = data;
+            console.log('✅ [geoUtils] Données géographiques chargées depuis API');
+            return data;
+        } catch (error) {
+            console.warn('⚠️ [geoUtils] Échec chargement API, utilisation données locales:', error.message);
+            // Fallback sur les données locales minimales
+            geoDataCache = {
+                countries: getLocalCountriesData(),
+                departments: getLocalDepartmentsData()
+            };
+            return geoDataCache;
+        } finally {
+            geoDataLoadPromise = null;
+        }
+    })();
+    
+    return geoDataLoadPromise;
+}
+
 /**
  * Nettoie un nom de ville en extrayant la partie principale
  * Porte depuis GeneaFan/assets/scripts/utils/geo.js
@@ -228,9 +271,9 @@ export function getCacheStats() {
  * 🚀 LOGIQUE SOPHISTIQUÉE : Porte depuis placeProcessor de GeneaFan
  * 
  * @param {string} placeString - Chaîne de lieu brute du GEDCOM
- * @returns {Object} - Composants du lieu
+ * @returns {Promise<Object>} - Composants du lieu
  */
-export function extractPlaceComponents(placeString) {
+export async function extractPlaceComponents(placeString) {
     if (!placeString || typeof placeString !== 'string') {
         return {
             town: null,
@@ -268,17 +311,18 @@ export function extractPlaceComponents(placeString) {
         
         // 3. 🔍 DÉTECTION INTELLIGENTE DU PAYS (logique placeProcessor._findCountry)
         const normalizedSegments = parts.map(part => normalizeGeoString(part));
-        const countryMatch = _findCountryInSegments(normalizedSegments);
+        const countryMatch = await _findCountryInSegments(normalizedSegments);
         if (countryMatch) {
             result.country = countryMatch.name.FR;
         }
         
         // 4. 🇫🇷 TRAITEMENT SPÉCIAL FRANÇAIS (logique placeProcessor._processFrenchDepartement)
         if (!result.country || result.country === "France") {
-            const departmentInfo = _extractFrenchDepartment(placeString);
+            const departmentInfo = await _extractFrenchDepartment(placeString);
             if (departmentInfo) {
                 result.department = departmentInfo.name;
                 result.postalCode = departmentInfo.postalCode;
+                result.departmentColor = departmentInfo.color;
             }
         }
         
@@ -299,11 +343,12 @@ export function extractPlaceComponents(placeString) {
             const uniqueParts = [...new Set(cleanParts.map(p => normalizeGeoString(p)))];
             
             // Ne pas utiliser le pays détecté comme département
+            const countriesList = await _getCountriesList();
             const nonCountryParts = cleanParts.filter(part => {
                 const normalized = normalizeGeoString(part);
                 
                 // Vérifier si c'est un pays ou une variante de pays
-                for (const country of _getCountriesList()) {
+                for (const country of countriesList) {
                     if (country.variants?.includes(normalized) || 
                         country.territories?.includes(normalized)) {
                         return false;
@@ -346,12 +391,12 @@ export function extractPlaceComponents(placeString) {
  * 🔍 FONCTION INTERNE: Trouve un pays dans les segments normalisés
  * 🚀 AMÉLIORÉE: Gère variantes, abréviations, territoires
  */
-function _findCountryInSegments(normalizedSegments) {
+async function _findCountryInSegments(normalizedSegments) {
     // Filtrer les segments vides
     const cleanSegments = normalizedSegments.filter(s => s && s.trim() !== '');
     
     // Utiliser la liste partagée des pays
-    const countries = _getCountriesList();
+    const countries = await _getCountriesList();
     
     // Recherche directe dans les variantes
     for (const country of countries) {
@@ -373,8 +418,43 @@ function _findCountryInSegments(normalizedSegments) {
 
 /**
  * 🔍 FONCTION HELPER: Retourne la liste des pays pour réutilisation
+ * Utilise l'API si disponible, sinon fallback local
  */
-function _getCountriesList() {
+async function _getCountriesList() {
+    try {
+        const geoData = await loadGeoData();
+        if (geoData?.countries?.continents) {
+            // Extraire tous les pays de la structure continents
+            const countries = [];
+            for (const continent of geoData.countries.continents) {
+                for (const country of continent.countries) {
+                    // Adapter la structure pour correspondre au format attendu
+                    countries.push({
+                        name: country.name,
+                        code: country.code,
+                        variants: [
+                            country.key.FR,
+                            country.key.EN?.toLowerCase(),
+                            country.code?.toLowerCase()
+                        ].filter(Boolean),
+                        territories: country.territories || []
+                    });
+                }
+            }
+            return countries;
+        }
+    } catch (error) {
+        console.warn('⚠️ [geoUtils] Utilisation données pays locales:', error.message);
+    }
+    
+    // Fallback sur données locales
+    return getLocalCountriesData();
+}
+
+/**
+ * Données locales de fallback pour les pays
+ */
+function getLocalCountriesData() {
     return [
         // France
         { 
@@ -448,7 +528,7 @@ function _getCountriesList() {
  * 🇫🇷 FONCTION INTERNE: Extrait département français
  * Porte depuis placeProcessor._processFrenchDepartement() + _extractAndSetDepartement()
  */
-function _extractFrenchDepartment(original) {
+async function _extractFrenchDepartment(original) {
     // Regex placeProcessor: \b\d{5}\b|\(\d{2}\)
     // - \b\d{5}\b : code postal (5 chiffres)  
     // - \(\d{2}\) : code département entre parenthèses comme "(59)"
@@ -469,8 +549,47 @@ function _extractFrenchDepartment(original) {
         departmentCode = departmentCode.substring(0, 2);
     }
     
-    // Mapping code → nom (simplifié des principaux départements)
-    const deptMapping = {
+    // Charger les données depuis l'API si possible
+    try {
+        const geoData = await loadGeoData();
+        if (geoData?.departments) {
+            // Rechercher par code dans les données de l'API
+            for (const [key, dept] of Object.entries(geoData.departments)) {
+                if (dept.code === departmentCode) {
+                    return {
+                        name: dept.name,
+                        code: departmentCode,
+                        postalCode: postalCode,
+                        color: dept.departementColor,
+                        region: dept.region
+                    };
+                }
+            }
+        }
+    } catch (error) {
+        console.warn('⚠️ [geoUtils] Utilisation mapping départements local');
+    }
+    
+    // Fallback: Mapping code → nom (simplifié des principaux départements)
+    const deptMapping = getLocalDepartmentsData();
+    
+    const departmentName = deptMapping[departmentCode];
+    if (departmentName) {
+        return {
+            name: departmentName,
+            code: departmentCode,
+            postalCode: postalCode
+        };
+    }
+    
+    return null;
+}
+
+/**
+ * Données locales de fallback pour les départements
+ */
+function getLocalDepartmentsData() {
+    return {
         "01": "Ain", "02": "Aisne", "03": "Allier", "04": "Alpes-de-Haute-Provence",
         "05": "Hautes-Alpes", "06": "Alpes-Maritimes", "07": "Ardèche", "08": "Ardennes",
         "09": "Ariège", "10": "Aube", "11": "Aude", "12": "Aveyron",
@@ -497,15 +616,61 @@ function _extractFrenchDepartment(original) {
         "91": "Essonne", "92": "Hauts-de-Seine", "93": "Seine-Saint-Denis",
         "94": "Val-de-Marne", "95": "Val-d'Oise"
     };
-    
-    const departmentName = deptMapping[departmentCode];
-    if (departmentName) {
-        return {
-            name: departmentName,
-            code: departmentCode,
-            postalCode: postalCode
-        };
+}
+
+/**
+ * Ajoute les fonctionnalités manquantes de placeProcessor
+ */
+
+/**
+ * Extrait les coordonnées géographiques depuis l'arbre GEDCOM
+ * @param {Array} tree - Arbre GEDCOM du lieu (PLAC)
+ * @returns {{latitude: number|null, longitude: number|null}}
+ */
+export function extractGeolocation(tree) {
+    if (!Array.isArray(tree)) {
+        return { latitude: null, longitude: null };
     }
     
-    return null;
+    try {
+        // Chercher le nœud MAP
+        const mapNode = tree.find(node => node.tag === 'MAP');
+        if (!mapNode || !Array.isArray(mapNode.tree)) {
+            return { latitude: null, longitude: null };
+        }
+        
+        // Chercher LATI et LONG dans MAP
+        const latiNode = mapNode.tree.find(node => node.tag === 'LATI');
+        const longNode = mapNode.tree.find(node => node.tag === 'LONG');
+        
+        if (latiNode && longNode) {
+            const latitude = parseFloat(latiNode.data?.trim());
+            const longitude = parseFloat(longNode.data?.trim());
+            
+            if (!isNaN(latitude) && !isNaN(longitude)) {
+                return { latitude, longitude };
+            }
+        }
+    } catch (error) {
+        console.warn('[geoUtils] Erreur extraction géolocalisation:', error.message);
+    }
+    
+    return { latitude: null, longitude: null };
+}
+
+/**
+ * Formate une chaîne d'affichage pour un lieu
+ * @param {Object} placeComponents - Composants du lieu
+ * @returns {string} - Chaîne formatée
+ */
+export function formatDisplayString(placeComponents) {
+    const parts = [
+        placeComponents.town,
+        placeComponents.postalCode,
+        placeComponents.department,
+        placeComponents.region,
+        placeComponents.country
+    ].filter(Boolean);
+    
+    return parts.join(', ');
 }
