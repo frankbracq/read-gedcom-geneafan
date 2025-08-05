@@ -595,13 +595,15 @@ export class CacheBuilder {
         this._log('🔍 Collecte des lieux uniques...');
         
         for (const individual of cache.values()) {
-            if (individual.individualTowns) {
-                individual.individualTowns.forEach(townKey => {
-                    if (!uniquePlaces[townKey]) {
+            // Les lieux sont dans les événements compressés (e)
+            if (individual.e && Array.isArray(individual.e)) {
+                individual.e.forEach(event => {
+                    // l = location (lieu normalisé)
+                    if (event.l && !uniquePlaces[event.l]) {
                         // Structure basique pour l'enrichissement
-                        uniquePlaces[townKey] = {
-                            town: townKey, // Sera enrichi par l'API
-                            townDisplay: townKey,
+                        uniquePlaces[event.l] = {
+                            town: event.l, // Sera enrichi par l'API
+                            townDisplay: event.l,
                             latitude: "",
                             longitude: "",
                             departement: "",
@@ -652,21 +654,44 @@ export class CacheBuilder {
      * @private
      */
     _integrateEnrichedData(cache, enrichedPlaces) {
-        // Pour l'instant, on stocke les données enrichies dans une propriété spéciale
-        // qui sera utilisée par geneafan pour le coloriage et la cartographie
+        // Créer une map globale des lieux enrichis
+        this.enrichedPlacesMap = enrichedPlaces;
+        
+        // Pour chaque individu, ajouter une référence aux lieux enrichis
         for (const individual of cache.values()) {
-            if (!individual.enrichedPlaces) {
-                individual.enrichedPlaces = {};
-            }
-            
-            if (individual.individualTowns) {
-                individual.individualTowns.forEach(townKey => {
-                    if (enrichedPlaces[townKey]) {
-                        individual.enrichedPlaces[townKey] = enrichedPlaces[townKey];
+            if (individual.e && Array.isArray(individual.e)) {
+                // Créer une liste des lieux uniques pour cet individu
+                const individualPlaces = new Set();
+                
+                individual.e.forEach(event => {
+                    if (event.l && enrichedPlaces[event.l]) {
+                        individualPlaces.add(event.l);
+                        
+                        // Optionnel : enrichir directement l'événement avec les coordonnées
+                        // pour un accès plus direct
+                        if (enrichedPlaces[event.l].latitude && enrichedPlaces[event.l].longitude) {
+                            event.lat = enrichedPlaces[event.l].latitude;
+                            event.lon = enrichedPlaces[event.l].longitude;
+                        }
+                        
+                        // Ajouter les couleurs pour l'éventail
+                        if (enrichedPlaces[event.l].departementColor) {
+                            event.dc = enrichedPlaces[event.l].departementColor;
+                        }
+                        if (enrichedPlaces[event.l].countryColor) {
+                            event.cc = enrichedPlaces[event.l].countryColor;
+                        }
                     }
                 });
+                
+                // Stocker la liste des lieux uniques enrichis pour cet individu
+                if (individualPlaces.size > 0) {
+                    individual.enrichedPlaces = Array.from(individualPlaces);
+                }
             }
         }
+        
+        this._log(`✅ ${Object.keys(enrichedPlaces).length} lieux enrichis intégrés`);
     }
     
     /**
