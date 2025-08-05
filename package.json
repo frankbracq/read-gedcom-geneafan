@@ -1,6 +1,6 @@
 {
   "name": "@fbracq/read-gedcom-geneafan",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "description": "Parser GEDCOM optimisé pour GeneaFan avec compression avancée et extraction de relations directes",
   "main": "src/index.js",
   "type": "module",
