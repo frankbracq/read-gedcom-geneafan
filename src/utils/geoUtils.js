@@ -338,6 +338,12 @@ export async function extractPlaceComponents(placeString) {
                 result.department = departmentInfo.name;
                 result.postalCode = departmentInfo.postalCode;
                 result.departmentColor = departmentInfo.color;
+                result.region = departmentInfo.region;
+                
+                // Si département français détecté, assigner pays France
+                if (!result.country) {
+                    result.country = "France";
+                }
             }
         }
         
@@ -548,10 +554,11 @@ function getLocalCountriesData() {
  * Porte depuis placeProcessor._processFrenchDepartement() + _extractAndSetDepartement()
  */
 async function _extractFrenchDepartment(original) {
-    // Regex placeProcessor: \b\d{5}\b|\(\d{2}\)
-    // - \b\d{5}\b : code postal (5 chiffres)  
+    // Regex étendue pour capturer plus de formats :
+    // - \b\d{5}\b : code postal (5 chiffres) comme "59310"
     // - \(\d{2}\) : code département entre parenthèses comme "(59)"
-    const codeRegex = /\b\d{5}\b|\(\d{2}\)/;
+    // - \b\d{2}\b : code département simple comme "59" dans "Glageon 59"
+    const codeRegex = /\b\d{5}\b|\(\d{2}\)|\b\d{2}\b/;
     const codeMatch = original.match(codeRegex);
     
     if (!codeMatch) return null;
@@ -566,6 +573,9 @@ async function _extractFrenchDepartment(original) {
         // Format "59310" → département 59, code postal 59310
         postalCode = departmentCode;
         departmentCode = departmentCode.substring(0, 2);
+    } else if (departmentCode.length === 2) {
+        // Format "59" → département 59 (déjà correct)
+        // Pas de code postal disponible
     }
     
     // Charger les données depuis l'API si possible
