@@ -16,6 +16,7 @@ export class CacheBuilder {
             compressFields: true,
             extractPlaces: true,
             generateStats: true,
+            enrichGeocoding: true,
             verbose: false,
             ...options
         };
@@ -145,6 +146,11 @@ export class CacheBuilder {
                 this._log(`❌ Erreur individu ${individual.pointer}: ${error.message}`);
                 this.stats.errors++;
             }
+        }
+        
+        // 🌍 ENRICHISSEMENT GÉOCODAGE: Ajouter coordonnées et couleurs
+        if (this.options.enrichGeocoding !== false) {
+            await this._enrichWithGeocoding(cache);
         }
         
         // Calculer compression
@@ -545,6 +551,127 @@ export class CacheBuilder {
             processed: this.stats.processed,
             errors: this.stats.errors
         };
+    }
+    
+    /**
+     * 🌍 ENRICHISSEMENT GÉOCODAGE: Ajoute coordonnées et couleurs via API
+     * @private
+     */
+    async _enrichWithGeocoding(cache) {
+        try {
+            this._log('🌍 Début enrichissement géocodage...');
+            
+            // 1. Collecter tous les lieux uniques
+            const uniquePlaces = this._collectUniquePlaces(cache);
+            
+            if (Object.keys(uniquePlaces).length === 0) {
+                this._log('ℹ️ Aucun lieu à enrichir');
+                return;
+            }
+            
+            this._log(`📍 ${Object.keys(uniquePlaces).length} lieux uniques à enrichir`);
+            
+            // 2. Appeler l'API de géocodage
+            const enrichedPlaces = await this._callGeocodingAPI(uniquePlaces);
+            
+            // 3. Intégrer les données enrichies dans le cache
+            this._integrateEnrichedData(cache, enrichedPlaces);
+            
+            this._log('✅ Enrichissement géocodage terminé');
+            
+        } catch (error) {
+            this._log(`⚠️ Erreur enrichissement géocodage: ${error.message}`);
+            // Continue sans enrichissement en cas d'erreur
+        }
+    }
+    
+    /**
+     * Collecte tous les lieux uniques qui nécessitent un enrichissement
+     * @private
+     */
+    _collectUniquePlaces(cache) {
+        const uniquePlaces = {};
+        
+        for (const individual of cache.values()) {
+            if (individual.individualTowns) {
+                individual.individualTowns.forEach(townKey => {
+                    if (!uniquePlaces[townKey]) {
+                        // Structure basique pour l'enrichissement
+                        uniquePlaces[townKey] = {
+                            town: townKey, // Sera enrichi par l'API
+                            townDisplay: townKey,
+                            latitude: "",
+                            longitude: "",
+                            departement: "",
+                            country: ""
+                        };
+                    }
+                });
+            }
+        }
+        
+        return uniquePlaces;
+    }
+    
+    /**
+     * Appelle l'API de géocodage pour enrichir les lieux
+     * @private
+     */
+    async _callGeocodingAPI(familyTowns) {
+        const requestBody = {
+            familyTowns: familyTowns,
+            userId: this._generateUserId()
+        };
+        
+        this._log(`🌐 Appel API géocodage: ${Object.keys(familyTowns).length} lieux`);
+        
+        const response = await fetch('https://geocode.genealogie.app', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(requestBody)
+        });
+        
+        if (!response.ok) {
+            throw new Error(`API géocodage error: ${response.status}`);
+        }
+        
+        const enrichedData = await response.json();
+        this._log(`📊 Reçu ${Object.keys(enrichedData).length} lieux enrichis`);
+        
+        return enrichedData;
+    }
+    
+    /**
+     * Intègre les données enrichies dans le cache des individus
+     * @private
+     */
+    _integrateEnrichedData(cache, enrichedPlaces) {
+        // Pour l'instant, on stocke les données enrichies dans une propriété spéciale
+        // qui sera utilisée par geneafan pour le coloriage et la cartographie
+        for (const individual of cache.values()) {
+            if (!individual.enrichedPlaces) {
+                individual.enrichedPlaces = {};
+            }
+            
+            if (individual.individualTowns) {
+                individual.individualTowns.forEach(townKey => {
+                    if (enrichedPlaces[townKey]) {
+                        individual.enrichedPlaces[townKey] = enrichedPlaces[townKey];
+                    }
+                });
+            }
+        }
+    }
+    
+    /**
+     * Génère un userId pour l'API de géocodage
+     * @private
+     */
+    _generateUserId() {
+        // Utilise un ID basé sur un hash du contenu ou un UUID simple
+        return 'read-gedcom-geneafan-' + Date.now();
     }
     
     _log(message) {
