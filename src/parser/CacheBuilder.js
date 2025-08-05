@@ -198,7 +198,7 @@ export class CacheBuilder {
         // === ÉVÉNEMENTS COMPRESSÉS ===
         // Phase 6 Cloud: Compression systématique des événements
         if (individual.events && individual.events.length > 0) {
-            result.e = this._compressEventsToGeneaFanFormat(individual.events);
+            result.e = await this._compressEventsToGeneaFanFormat(individual.events);
         }
         
         // === QUALITÉ ===
@@ -219,11 +219,11 @@ export class CacheBuilder {
      * Compresse les événements au format GeneaFan (Phase 6 Cloud)
      * @private
      */
-    _compressEventsToGeneaFanFormat(events) {
+    async _compressEventsToGeneaFanFormat(events) {
         const compressed = [];
         
         for (const event of events) {
-            const compressedEvent = this._compressSingleEvent(event);
+            const compressedEvent = await this._compressSingleEvent(event);
             if (compressedEvent) {
                 compressed.push(compressedEvent);
             }
@@ -236,7 +236,7 @@ export class CacheBuilder {
      * Compresse un événement individuel
      * @private
      */
-    _compressSingleEvent(event) {
+    async _compressSingleEvent(event) {
         if (!event || !event.type) return null;
         
         const compressed = {};
@@ -251,7 +251,7 @@ export class CacheBuilder {
         
         // Lieu (clé normalisée)
         if (event.place) {
-            compressed.l = this._normalizePlace(event.place);
+            compressed.l = await this._normalizePlace(event.place);
         }
         
         // Métadonnées (spouseId, childId, etc.)
@@ -318,12 +318,12 @@ export class CacheBuilder {
      * Normalise un lieu géographique avec parsePlaceParts + logique GeneaFan
      * @private
      */
-    _normalizePlace(place) {
+    async _normalizePlace(place) {
         if (!place || typeof place !== 'string') return null;
         
         // 🔍 LOGGING DÉTAILLÉ: Traçabilité complète du traitement des lieux
         if (this.options.verbose || this.options.logPlaces) {
-            const components = extractPlaceComponents(place);
+            const components = await extractPlaceComponents(place);
             const normalized = normalizePlace(place);
             
             console.log('🗺️ [CacheBuilder] Traitement lieu:');
