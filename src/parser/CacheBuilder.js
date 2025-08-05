@@ -16,7 +16,7 @@ export class CacheBuilder {
             compressFields: true,
             extractPlaces: true,
             generateStats: true,
-            enrichGeocoding: true,
+            enrichGeocoding: false,
             verbose: false,
             ...options
         };
@@ -62,9 +62,13 @@ export class CacheBuilder {
             this._log('Construction du cache des dépôts...');
             const repositoriesCache = await this._buildRepositoriesCache(enrichedData.repositories);
             
-            // Extraire les lieux uniques
-            const places = this.options.extractPlaces ? 
-                this._extractUniquePlaces(individualsCache, familiesCache) : new Set();
+            // Générer familyTownsStore de base (données extraites sans enrichissement)
+            const familyTownsStore = this.options.extractPlaces ? 
+                await this._generateFamilyTownsStore(enrichedData.individuals, familiesCache) : {};
+            
+            // Extraire les lieux uniques (pour compatibilité)
+            const places = Object.keys(familyTownsStore).length > 0 ? 
+                new Set(Object.keys(familyTownsStore)) : new Set();
             
             // Calculer statistiques globales
             const statistics = this.options.generateStats ? 
@@ -87,6 +91,9 @@ export class CacheBuilder {
                 mediaCache,
                 notesCache,
                 repositoriesCache,
+                
+                // 🗺️ NOUVEAU: FamilyTownsStore de base pour geneafan
+                familyTownsStore,
                 
                 // Données dérivées
                 places,
@@ -148,10 +155,8 @@ export class CacheBuilder {
             }
         }
         
-        // 🌍 ENRICHISSEMENT GÉOCODAGE: Ajouter coordonnées et couleurs
-        if (this.options.enrichGeocoding !== false) {
-            await this._enrichWithGeocoding(cache);
-        }
+        // 🌍 ENRICHISSEMENT GÉOCODAGE: Désactivé - sera fait par geneafan en arrière-plan
+        // L'enrichissement (couleurs + coordonnées) sera géré par familyTownsStore.js
         
         // Calculer compression
         const compressedSize = JSON.stringify([...cache.entries()]).length;
@@ -327,21 +332,8 @@ export class CacheBuilder {
     async _normalizePlace(place) {
         if (!place || typeof place !== 'string') return null;
         
-        // 🔍 LOGGING DÉTAILLÉ: Traçabilité complète du traitement des lieux
-        if (this.options.verbose || this.options.logPlaces) {
-            const components = await extractPlaceComponents(place);
-            const normalized = normalizePlace(place);
-            
-            console.log('🗺️ [CacheBuilder] Traitement lieu:');
-            console.log(`   📍 Source GEDCOM: "${place}"`);
-            console.log(`   🏘️  Ville extraite: "${components.town || 'N/A'}"`);
-            console.log(`   📮 Code postal: ${components.postalCode || 'N/A'}`);
-            console.log(`   🗺️  Département: ${components.department || 'N/A'}`);
-            console.log(`   🌍 Région: ${components.region || 'N/A'}`);
-            console.log(`   🌐 Pays: ${components.country || 'N/A'}`);
-            console.log(`   🔑 Clé finale: "${normalized}"`);
-            console.log('   ─────────────────────────────────');
-        }
+        // 🔍 LOGGING DÉTAILLÉ: Désactivé pour production propre
+        // Le logging détaillé peut être réactivé avec this.options.logPlaces = true
         
         // Utilise le module geoUtils avec parsePlaceParts de read-gedcom
         return normalizePlace(place);
@@ -477,7 +469,78 @@ export class CacheBuilder {
     }
     
     /**
-     * Extrait tous les lieux uniques
+     * 🗺️ GÉNÈRE familyTownsStore de base avec données extraites du GEDCOM
+     * Format compatible avec geneafan main branch
+     * @private
+     */
+    async _generateFamilyTownsStore(individualsData, familiesCache) {
+        const familyTownsStore = {};
+        
+        this._log('🏗️ Génération familyTownsStore de base...');
+        
+        // Collecter tous les lieux uniques et leurs données source
+        const placesData = new Map();
+        
+        // Traiter les individus depuis les données sources (avant compression)
+        if (Array.isArray(individualsData)) {
+            for (const individual of individualsData) {
+                if (individual.events && Array.isArray(individual.events)) {
+                    for (const event of individual.events) {
+                        if (event.place) {
+                            const normalizedKey = await this._normalizePlace(event.place);
+                            if (normalizedKey) {
+                                if (!placesData.has(normalizedKey)) {
+                                    placesData.set(normalizedKey, {
+                                        normalizedKey,
+                                        samples: new Set()
+                                    });
+                                }
+                                // Collecter les échantillons de lieux originaux pour enrichissement futur
+                                placesData.get(normalizedKey).samples.add(event.place);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Générer la structure familyTownsStore
+        for (const [key, data] of placesData) {
+            // Extraire les composants depuis un échantillon pour avoir le nom formaté
+            const firstSample = Array.from(data.samples)[0] || '';
+            const components = await extractPlaceComponents(firstSample);
+            
+            // Construire townDisplay avec contexte géographique
+            const townName = components.town || key;
+            let townDisplay = townName;
+            
+            if (components.department) {
+                // Ajouter le département si présent
+                townDisplay = `${townName} (${components.department})`;
+            } else if (components.country && components.country !== 'France') {
+                // Ajouter le pays si ce n'est pas la France
+                townDisplay = `${townName} (${components.country})`;
+            }
+            
+            familyTownsStore[key] = {
+                town: townName,                      // Nom formaté via formatTownName
+                townDisplay: townDisplay,            // Nom avec contexte géographique
+                latitude: "",                        // Sera enrichi par geneafan
+                longitude: "",                       // Sera enrichi par geneafan
+                departement: components.department || "",  // Département extrait
+                country: components.country || "",         // Pays extrait  
+                departementColor: "",                // Sera enrichi par geneafan
+                countryColor: "",                    // Sera enrichi par geneafan
+                _samples: Array.from(data.samples).slice(0, 3) // Échantillons pour enrichissement
+            };
+        }
+        
+        this._log(`✅ FamilyTownsStore généré: ${Object.keys(familyTownsStore).length} lieux`);
+        return familyTownsStore;
+    }
+    
+    /**
+     * Extrait tous les lieux uniques (DEPRECATED - utilisé pour compatibilité)
      * @private
      */
     _extractUniquePlaces(individualsCache, familiesCache) {
@@ -553,155 +616,9 @@ export class CacheBuilder {
         };
     }
     
-    /**
-     * 🌍 ENRICHISSEMENT GÉOCODAGE: Ajoute coordonnées et couleurs via API
-     * @private
-     */
-    async _enrichWithGeocoding(cache) {
-        try {
-            this._log('🌍 Début enrichissement géocodage...');
-            
-            // 1. Collecter tous les lieux uniques
-            const uniquePlaces = this._collectUniquePlaces(cache);
-            
-            if (Object.keys(uniquePlaces).length === 0) {
-                this._log('ℹ️ Aucun lieu à enrichir');
-                return;
-            }
-            
-            this._log(`📍 ${Object.keys(uniquePlaces).length} lieux uniques à enrichir`);
-            
-            // 2. Appeler l'API de géocodage
-            const enrichedPlaces = await this._callGeocodingAPI(uniquePlaces);
-            
-            // 3. Intégrer les données enrichies dans le cache
-            this._integrateEnrichedData(cache, enrichedPlaces);
-            
-            this._log('✅ Enrichissement géocodage terminé');
-            
-        } catch (error) {
-            this._log(`⚠️ Erreur enrichissement géocodage: ${error.message}`);
-            // Continue sans enrichissement en cas d'erreur
-        }
-    }
-    
-    /**
-     * Collecte tous les lieux uniques qui nécessitent un enrichissement
-     * @private
-     */
-    _collectUniquePlaces(cache) {
-        const uniquePlaces = {};
-        
-        this._log('🔍 Collecte des lieux uniques...');
-        
-        for (const individual of cache.values()) {
-            // Les lieux sont dans les événements compressés (e)
-            if (individual.e && Array.isArray(individual.e)) {
-                individual.e.forEach(event => {
-                    // l = location (lieu normalisé)
-                    if (event.l && !uniquePlaces[event.l]) {
-                        // Structure basique pour l'enrichissement
-                        uniquePlaces[event.l] = {
-                            town: event.l, // Sera enrichi par l'API
-                            townDisplay: event.l,
-                            latitude: "",
-                            longitude: "",
-                            departement: "",
-                            country: ""
-                        };
-                    }
-                });
-            }
-        }
-        
-        this._log(`📊 ${Object.keys(uniquePlaces).length} lieux uniques trouvés`);
-        
-        return uniquePlaces;
-    }
-    
-    /**
-     * Appelle l'API de géocodage pour enrichir les lieux
-     * @private
-     */
-    async _callGeocodingAPI(familyTowns) {
-        const requestBody = {
-            familyTowns: familyTowns,
-            userId: this._generateUserId()
-        };
-        
-        this._log(`🌐 Appel API géocodage: ${Object.keys(familyTowns).length} lieux`);
-        
-        const response = await fetch('https://geocode.genealogie.app', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(requestBody)
-        });
-        
-        if (!response.ok) {
-            throw new Error(`API géocodage error: ${response.status}`);
-        }
-        
-        const enrichedData = await response.json();
-        this._log(`📊 Reçu ${Object.keys(enrichedData).length} lieux enrichis`);
-        
-        return enrichedData;
-    }
-    
-    /**
-     * Intègre les données enrichies dans le cache des individus
-     * @private
-     */
-    _integrateEnrichedData(cache, enrichedPlaces) {
-        // Créer une map globale des lieux enrichis
-        this.enrichedPlacesMap = enrichedPlaces;
-        
-        // Pour chaque individu, ajouter une référence aux lieux enrichis
-        for (const individual of cache.values()) {
-            if (individual.e && Array.isArray(individual.e)) {
-                // Créer une liste des lieux uniques pour cet individu
-                const individualPlaces = new Set();
-                
-                individual.e.forEach(event => {
-                    if (event.l && enrichedPlaces[event.l]) {
-                        individualPlaces.add(event.l);
-                        
-                        // Optionnel : enrichir directement l'événement avec les coordonnées
-                        // pour un accès plus direct
-                        if (enrichedPlaces[event.l].latitude && enrichedPlaces[event.l].longitude) {
-                            event.lat = enrichedPlaces[event.l].latitude;
-                            event.lon = enrichedPlaces[event.l].longitude;
-                        }
-                        
-                        // Ajouter les couleurs pour l'éventail
-                        if (enrichedPlaces[event.l].departementColor) {
-                            event.dc = enrichedPlaces[event.l].departementColor;
-                        }
-                        if (enrichedPlaces[event.l].countryColor) {
-                            event.cc = enrichedPlaces[event.l].countryColor;
-                        }
-                    }
-                });
-                
-                // Stocker la liste des lieux uniques enrichis pour cet individu
-                if (individualPlaces.size > 0) {
-                    individual.enrichedPlaces = Array.from(individualPlaces);
-                }
-            }
-        }
-        
-        this._log(`✅ ${Object.keys(enrichedPlaces).length} lieux enrichis intégrés`);
-    }
-    
-    /**
-     * Génère un userId pour l'API de géocodage
-     * @private
-     */
-    _generateUserId() {
-        // Utilise un ID basé sur un hash du contenu ou un UUID simple
-        return 'read-gedcom-geneafan-' + Date.now();
-    }
+    // 🗑️ ENRICHISSEMENT GÉOCODAGE: Retiré - sera géré par geneafan/familyTownsStore.js
+    // Toutes les méthodes d'enrichissement ont été supprimées pour garder 
+    // read-gedcom-geneafan focalisé sur l'extraction pure des données GEDCOM
     
     _log(message) {
         if (this.options.verbose) {

@@ -6,6 +6,7 @@
  */
 
 import { parsePlaceParts } from 'read-gedcom';
+import { logger } from './logger.js';
 
 // 🚀 OPTIMISATION: Cache de normalisation pour éviter les recalculs
 const normalizationCache = new Map();
@@ -13,6 +14,9 @@ const normalizationCache = new Map();
 // 🌐 Cache pour les données géographiques depuis l'API
 let geoDataCache = null;
 let geoDataLoadPromise = null;
+
+// Module name pour le logger
+const MODULE = 'geoUtils';
 
 /**
  * Charge les données géographiques depuis l'API Cloudflare KV
@@ -28,10 +32,10 @@ async function loadGeoData() {
     // Lancer le chargement
     geoDataLoadPromise = (async () => {
         try {
-            console.log('🌐 [geoUtils] Tentative chargement API geo-data...');
-            console.log('🔄 [geoUtils] Démarrage fetch()...');
+            logger.debug(MODULE, 'Tentative chargement API geo-data...');
+            logger.debug(MODULE, 'Démarrage fetch()...');
             const response = await fetch('https://geocode.genealogie.app/api/geo-data');
-            console.log('📡 [geoUtils] Réponse API reçue:', response.status, response.ok);
+            logger.debug(MODULE, 'Réponse API reçue:', response.status, response.ok);
             
             if (!response.ok) {
                 throw new Error(`Failed to load geo data: ${response.status}`);
@@ -39,18 +43,17 @@ async function loadGeoData() {
             
             const data = await response.json();
             geoDataCache = data;
-            console.log('✅ [geoUtils] Données géographiques chargées depuis API');
-            console.log('📊 [geoUtils] Continents chargés:', data.countries?.continents?.length);
-            console.log('📊 [geoUtils] Départements chargés:', Object.keys(data.departments || {}).length);
+            logger.debug(MODULE, 'Données géographiques chargées depuis API');
+            logger.debug(MODULE, 'Continents chargés:', data.countries?.continents?.length);
+            logger.debug(MODULE, 'Départements chargés:', Object.keys(data.departments || {}).length);
             return data;
         } catch (error) {
-            console.warn('⚠️ [geoUtils] Échec chargement API, utilisation données locales:', error.message);
-            console.warn('🔧 [geoUtils] Stack trace:', error.stack);
+            logger.warn(MODULE, 'Échec chargement API, utilisation données locales:', error.message);
             // Fallback sur les données locales minimales
             const localCountries = getLocalCountriesData();
             const localDepartments = getLocalDepartmentsData();
-            console.log('🏠 [geoUtils] Fallback - Pays locaux:', localCountries.continents?.length);
-            console.log('🏠 [geoUtils] Fallback - Départements locaux:', Object.keys(localDepartments || {}).length);
+            logger.debug(MODULE, 'Fallback - Pays locaux:', localCountries.continents?.length);
+            logger.debug(MODULE, 'Fallback - Départements locaux:', Object.keys(localDepartments || {}).length);
             
             geoDataCache = {
                 countries: localCountries,
@@ -242,7 +245,7 @@ export function normalizePlacesBatch(places) {
     const results = new Map();
     const uniquePlaces = [...new Set(places)]; // Déduplication
     
-    console.log(`🚀 [geoUtils] Normalisation batch: ${uniquePlaces.length} lieux uniques`);
+    logger.debug(MODULE, `Normalisation batch: ${uniquePlaces.length} lieux uniques`);
     
     const startTime = Date.now();
     for (const place of uniquePlaces) {
@@ -252,7 +255,7 @@ export function normalizePlacesBatch(places) {
     const duration = Date.now() - startTime;
     const cacheHits = places.length - uniquePlaces.length;
     
-    console.log(`✅ [geoUtils] Batch terminé: ${duration}ms, ${cacheHits} hits cache, ${normalizationCache.size} entrées`);
+    logger.debug(MODULE, `Batch terminé: ${duration}ms, ${cacheHits} hits cache, ${normalizationCache.size} entrées`);
     
     return results;
 }
@@ -264,7 +267,7 @@ export function normalizePlacesBatch(places) {
 export function clearNormalizationCache() {
     const size = normalizationCache.size;
     normalizationCache.clear();
-    console.log(`🗑️ [geoUtils] Cache normalization vidé: ${size} entrées supprimées`);
+    logger.debug(MODULE, `Cache normalization vidé: ${size} entrées supprimées`);
 }
 
 /**
@@ -286,10 +289,10 @@ export function getCacheStats() {
  * @returns {Promise<Object>} - Composants du lieu
  */
 export async function extractPlaceComponents(placeString) {
-    console.log('🔍 [geoUtils] extractPlaceComponents appelée avec:', placeString);
+    logger.debug(MODULE, 'extractPlaceComponents appelée avec:', placeString);
     
     if (!placeString || typeof placeString !== 'string') {
-        console.log('⚠️ [geoUtils] PlaceString invalide, retour null');
+        logger.debug(MODULE, 'PlaceString invalide, retour null');
         return {
             town: null,
             postalCode: null,
@@ -413,15 +416,15 @@ export async function extractPlaceComponents(placeString) {
  * 🚀 AMÉLIORÉE: Gère variantes, abréviations, territoires
  */
 async function _findCountryInSegments(normalizedSegments) {
-    console.log('🌍 [geoUtils] _findCountryInSegments appelée avec:', normalizedSegments);
+    logger.debug(MODULE, '_findCountryInSegments appelée avec:', normalizedSegments);
     
     // Filtrer les segments vides
     const cleanSegments = normalizedSegments.filter(s => s && s.trim() !== '');
     
     // Utiliser la liste partagée des pays
-    console.log('📋 [geoUtils] Appel _getCountriesList()...');
+    logger.debug(MODULE, 'Appel _getCountriesList()...');
     const countries = await _getCountriesList();
-    console.log('📋 [geoUtils] Pays reçus:', countries.length);
+    logger.debug(MODULE, 'Pays reçus:', countries.length);
     
     // Recherche directe dans les variantes
     for (const country of countries) {
