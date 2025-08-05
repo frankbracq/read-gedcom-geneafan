@@ -3,20 +3,15 @@
  * Transforme les données enrichies en caches compressées
  */
 
-import { compressEventArray } from '../compression/eventCompression.js';
-import { compressGeneaFanIndividual, compressFields } from '../compression/fieldCompression.js';
-import { calculateQualityScore, calculateCacheQualityStats } from '../utils/qualityScoring.js';
+import { calculateCacheQualityStats } from '../utils/qualityScoring.js';
 import { normalizePlace, extractPlaceComponents } from '../utils/geoUtils.js';
 
 export class CacheBuilder {
     constructor(options = {}) {
         this.options = {
             calculateQuality: true,
-            compressEvents: true,
-            compressFields: true,
             extractPlaces: true,
             generateStats: true,
-            enrichGeocoding: false,
             verbose: false,
             ...options
         };
@@ -64,7 +59,7 @@ export class CacheBuilder {
             
             // Générer familyTownsStore de base (données extraites sans enrichissement)
             const familyTownsStore = this.options.extractPlaces ? 
-                await this._generateFamilyTownsStore(enrichedData.individuals, familiesCache) : {};
+                await this._generateFamilyTownsStore(enrichedData.individuals) : {};
             
             // Extraire les lieux uniques (pour compatibilité)
             const places = Object.keys(familyTownsStore).length > 0 ? 
@@ -473,7 +468,7 @@ export class CacheBuilder {
      * Format compatible avec geneafan main branch
      * @private
      */
-    async _generateFamilyTownsStore(individualsData, familiesCache) {
+    async _generateFamilyTownsStore(individualsData) {
         const familyTownsStore = {};
         
         this._log('🏗️ Génération familyTownsStore de base...');
@@ -539,33 +534,7 @@ export class CacheBuilder {
         return familyTownsStore;
     }
     
-    /**
-     * Extrait tous les lieux uniques (DEPRECATED - utilisé pour compatibilité)
-     * @private
-     */
-    _extractUniquePlaces(individualsCache, familiesCache) {
-        const places = new Set();
-        
-        // Lieux des individus
-        for (const individual of individualsCache.values()) {
-            if (individual.e) {
-                individual.e.forEach(event => {
-                    if (event.l) places.add(event.l);
-                });
-            }
-        }
-        
-        // Lieux des familles
-        for (const family of familiesCache.values()) {
-            if (family.e) {
-                family.e.forEach(event => {
-                    if (event.l) places.add(event.l);
-                });
-            }
-        }
-        
-        return places;
-    }
+    // Méthode _extractUniquePlaces supprimée - remplacée par _generateFamilyTownsStore
     
     /**
      * Génère les statistiques globales
@@ -616,9 +585,7 @@ export class CacheBuilder {
         };
     }
     
-    // 🗑️ ENRICHISSEMENT GÉOCODAGE: Retiré - sera géré par geneafan/familyTownsStore.js
-    // Toutes les méthodes d'enrichissement ont été supprimées pour garder 
-    // read-gedcom-geneafan focalisé sur l'extraction pure des données GEDCOM
+    // Enrichissement géocodage géré par geneafan/familyTownsStore.js
     
     _log(message) {
         if (this.options.verbose) {
