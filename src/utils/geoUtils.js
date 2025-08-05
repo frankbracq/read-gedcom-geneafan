@@ -29,6 +29,7 @@ async function loadGeoData() {
     geoDataLoadPromise = (async () => {
         try {
             console.log('🌐 [geoUtils] Tentative chargement API geo-data...');
+            console.log('🔄 [geoUtils] Démarrage fetch()...');
             const response = await fetch('https://geocode.genealogie.app/api/geo-data');
             console.log('📡 [geoUtils] Réponse API reçue:', response.status, response.ok);
             
@@ -406,11 +407,15 @@ export async function extractPlaceComponents(placeString) {
  * 🚀 AMÉLIORÉE: Gère variantes, abréviations, territoires
  */
 async function _findCountryInSegments(normalizedSegments) {
+    console.log('🌍 [geoUtils] _findCountryInSegments appelée avec:', normalizedSegments);
+    
     // Filtrer les segments vides
     const cleanSegments = normalizedSegments.filter(s => s && s.trim() !== '');
     
     // Utiliser la liste partagée des pays
+    console.log('📋 [geoUtils] Appel _getCountriesList()...');
     const countries = await _getCountriesList();
+    console.log('📋 [geoUtils] Pays reçus:', countries.length);
     
     // Recherche directe dans les variantes
     for (const country of countries) {
