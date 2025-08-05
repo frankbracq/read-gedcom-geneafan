@@ -28,7 +28,10 @@ async function loadGeoData() {
     // Lancer le chargement
     geoDataLoadPromise = (async () => {
         try {
+            console.log('🌐 [geoUtils] Tentative chargement API geo-data...');
             const response = await fetch('https://geocode.genealogie.app/api/geo-data');
+            console.log('📡 [geoUtils] Réponse API reçue:', response.status, response.ok);
+            
             if (!response.ok) {
                 throw new Error(`Failed to load geo data: ${response.status}`);
             }
@@ -36,13 +39,21 @@ async function loadGeoData() {
             const data = await response.json();
             geoDataCache = data;
             console.log('✅ [geoUtils] Données géographiques chargées depuis API');
+            console.log('📊 [geoUtils] Continents chargés:', data.countries?.continents?.length);
+            console.log('📊 [geoUtils] Départements chargés:', Object.keys(data.departments || {}).length);
             return data;
         } catch (error) {
             console.warn('⚠️ [geoUtils] Échec chargement API, utilisation données locales:', error.message);
+            console.warn('🔧 [geoUtils] Stack trace:', error.stack);
             // Fallback sur les données locales minimales
+            const localCountries = getLocalCountriesData();
+            const localDepartments = getLocalDepartmentsData();
+            console.log('🏠 [geoUtils] Fallback - Pays locaux:', localCountries.continents?.length);
+            console.log('🏠 [geoUtils] Fallback - Départements locaux:', Object.keys(localDepartments || {}).length);
+            
             geoDataCache = {
-                countries: getLocalCountriesData(),
-                departments: getLocalDepartmentsData()
+                countries: localCountries,
+                departments: localDepartments
             };
             return geoDataCache;
         } finally {
@@ -274,7 +285,10 @@ export function getCacheStats() {
  * @returns {Promise<Object>} - Composants du lieu
  */
 export async function extractPlaceComponents(placeString) {
+    console.log('🔍 [geoUtils] extractPlaceComponents appelée avec:', placeString);
+    
     if (!placeString || typeof placeString !== 'string') {
+        console.log('⚠️ [geoUtils] PlaceString invalide, retour null');
         return {
             town: null,
             postalCode: null,
