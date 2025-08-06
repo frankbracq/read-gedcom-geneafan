@@ -522,7 +522,7 @@ export class DataExtractor {
                                     if (!isNaN(lat) && !isNaN(lon)) {
                                         placeData._tempLatitude = lat;
                                         placeData._tempLongitude = lon;
-                                        this._log(`   📍 Coordonnées MAP/LATI/LONG pour "${placeValue}": ${lat}, ${lon}`);
+                                        // Log removed: coordinate extraction working perfectly
                                     }
                                 }
                             }
