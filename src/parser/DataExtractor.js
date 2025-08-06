@@ -3,6 +3,8 @@
  * Produit des données enrichies prêtes pour la compression GeneaFan
  */
 
+import { extractGeolocation } from '../utils/geoUtils.js';
+
 export class DataExtractor {
     constructor(options = {}) {
         this.options = {
@@ -453,7 +455,89 @@ export class DataExtractor {
     }
     _extractPlace(placeSelection) { 
         if (placeSelection.length === 0) return null;
-        return placeSelection.value()[0] || null;
+        
+        const placeValue = placeSelection.value()[0] || null;
+        if (!placeValue) return null;
+        
+        // Structure temporaire pour transporter les coordonnées
+        // Note: Cet objet sera utilisé uniquement pendant l'extraction
+        // Les coordonnées ne seront PAS stockées dans le cache individuel final
+        const placeData = {
+            value: placeValue,
+            // Propriétés temporaires pour transport vers familyTownsStore
+            _tempLatitude: null,
+            _tempLongitude: null
+        };
+        
+        // Tentative d'extraction des coordonnées via API read-gedcom
+        try {
+            // Obtenir le premier enregistrement de lieu
+            const placeRecords = placeSelection.arraySelect();
+            if (placeRecords && placeRecords.length > 0) {
+                const placeRecord = placeRecords[0];
+                
+                // Méthode 1 : Utiliser getCoordinates si disponible (API native)
+                if (typeof placeRecord.getCoordinates === 'function') {
+                    const coords = placeRecord.getCoordinates();
+                    if (coords.length > 0) {
+                        const coordsValue = coords.value()[0];
+                        if (coordsValue) {
+                            // Format possible: "lat,lon" ou objet
+                            const parts = String(coordsValue).split(',');
+                            if (parts.length === 2) {
+                                const lat = parseFloat(parts[0].trim());
+                                const lon = parseFloat(parts[1].trim());
+                                if (!isNaN(lat) && !isNaN(lon)) {
+                                    placeData._tempLatitude = lat;
+                                    placeData._tempLongitude = lon;
+                                    this._log(`   📍 Coordonnées getCoordinates() pour "${placeValue}": ${lat}, ${lon}`);
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Méthode 2 : Accès via get('MAP') - API générique
+                if (placeData._tempLatitude === null && typeof placeRecord.get === 'function') {
+                    const mapSelection = placeRecord.get('MAP');
+                    if (mapSelection && mapSelection.length > 0) {
+                        const mapRecords = mapSelection.arraySelect();
+                        if (mapRecords && mapRecords.length > 0) {
+                            const mapRecord = mapRecords[0];
+                            
+                            // Extraire LATI et LONG via get()
+                            const latiSelection = mapRecord.get('LATI');
+                            const longSelection = mapRecord.get('LONG');
+                            
+                            if (latiSelection && latiSelection.length > 0 && 
+                                longSelection && longSelection.length > 0) {
+                                
+                                const latValue = latiSelection.value()[0];
+                                const lonValue = longSelection.value()[0];
+                                
+                                if (latValue && lonValue) {
+                                    const lat = parseFloat(latValue);
+                                    const lon = parseFloat(lonValue);
+                                    
+                                    if (!isNaN(lat) && !isNaN(lon)) {
+                                        placeData._tempLatitude = lat;
+                                        placeData._tempLongitude = lon;
+                                        this._log(`   📍 Coordonnées MAP/LATI/LONG pour "${placeValue}": ${lat}, ${lon}`);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (error) {
+            // En cas d'erreur, on retourne quand même le lieu sans coordonnées
+            this._log(`   ⚠️ Impossible d'extraire coordonnées pour "${placeValue}": ${error.message}`);
+        }
+        
+        // IMPORTANT : Retourner l'objet complet TEMPORAIREMENT
+        // CacheBuilder devra extraire les coordonnées et ne stocker que la valeur
+        return placeData;
     }
     _extractAge(ageSelection) { return null; }
     _extractCause(eventSelection) { return null; }

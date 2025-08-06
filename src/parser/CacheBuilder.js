@@ -3,15 +3,20 @@
  * Transforme les données enrichies en caches compressées
  */
 
-import { calculateCacheQualityStats } from '../utils/qualityScoring.js';
+import { compressEventArray } from '../compression/eventCompression.js';
+import { compressGeneaFanIndividual, compressFields } from '../compression/fieldCompression.js';
+import { calculateQualityScore, calculateCacheQualityStats } from '../utils/qualityScoring.js';
 import { normalizePlace, extractPlaceComponents } from '../utils/geoUtils.js';
 
 export class CacheBuilder {
     constructor(options = {}) {
         this.options = {
             calculateQuality: true,
+            compressEvents: true,
+            compressFields: true,
             extractPlaces: true,
             generateStats: true,
+            enrichGeocoding: false,
             verbose: false,
             ...options
         };
@@ -59,7 +64,7 @@ export class CacheBuilder {
             
             // Générer familyTownsStore de base (données extraites sans enrichissement)
             const familyTownsStore = this.options.extractPlaces ? 
-                await this._generateFamilyTownsStore(enrichedData.individuals) : {};
+                await this._generateFamilyTownsStore(enrichedData.individuals, familiesCache) : {};
             
             // Extraire les lieux uniques (pour compatibilité)
             const places = Object.keys(familyTownsStore).length > 0 ? 
@@ -239,7 +244,7 @@ export class CacheBuilder {
     }
     
     /**
-     * Compresse un événement individuel
+     * Compresse un événement individuel SANS dupliquer les coordonnées
      * @private
      */
     async _compressSingleEvent(event) {
@@ -255,12 +260,21 @@ export class CacheBuilder {
             compressed.d = this._compressDate(event.date);
         }
         
-        // Lieu (clé normalisée)
+        // Lieu - IMPORTANT : Ne stocker QUE la clé normalisée, PAS les coordonnées
         if (event.place) {
-            compressed.l = await this._normalizePlace(event.place);
+            // Si place est un objet temporaire avec coordonnées
+            if (typeof event.place === 'object' && event.place.value) {
+                compressed.l = await this._normalizePlace(event.place.value);
+                // ⚠️ NE PAS stocker _tempLatitude/_tempLongitude ici !
+                // Les coordonnées seront dans familyTownsStore uniquement
+            } 
+            // Fallback si place est une string (rétrocompatibilité)
+            else if (typeof event.place === 'string') {
+                compressed.l = await this._normalizePlace(event.place);
+            }
         }
         
-        // Métadonnées (spouseId, childId, etc.)
+        // Métadonnées standards (spouseId, childId, etc.)
         const metadata = {};
         if (event.spouseId) metadata.s = event.spouseId;
         if (event.childId) metadata.c = event.childId;
@@ -464,34 +478,62 @@ export class CacheBuilder {
     }
     
     /**
-     * 🗺️ GÉNÈRE familyTownsStore de base avec données extraites du GEDCOM
-     * Format compatible avec geneafan main branch
+     * 🗺️ GÉNÈRE familyTownsStore avec coordonnées natives centralisées
      * @private
      */
-    async _generateFamilyTownsStore(individualsData) {
+    async _generateFamilyTownsStore(individualsData, familiesCache) {
         const familyTownsStore = {};
         
-        this._log('🏗️ Génération familyTownsStore de base...');
+        this._log('🏗️ Génération familyTownsStore avec coordonnées natives centralisées...');
         
-        // Collecter tous les lieux uniques et leurs données source
+        // Structure pour collecter TOUS les lieux et leurs coordonnées
         const placesData = new Map();
+        let coordsExtracted = 0;
         
-        // Traiter les individus depuis les données sources (avant compression)
+        // Phase 1 : Collecter tous les lieux uniques et leurs coordonnées
         if (Array.isArray(individualsData)) {
             for (const individual of individualsData) {
                 if (individual.events && Array.isArray(individual.events)) {
                     for (const event of individual.events) {
                         if (event.place) {
-                            const normalizedKey = await this._normalizePlace(event.place);
+                            // Extraire la valeur du lieu (gère l'objet temporaire ou string)
+                            const placeValue = typeof event.place === 'object' ? 
+                                event.place.value : event.place;
+                            
+                            if (!placeValue) continue;
+                            
+                            const normalizedKey = await this._normalizePlace(placeValue);
+                            
                             if (normalizedKey) {
+                                // Initialiser l'entrée si première fois
                                 if (!placesData.has(normalizedKey)) {
                                     placesData.set(normalizedKey, {
                                         normalizedKey,
-                                        samples: new Set()
+                                        samples: new Set(),
+                                        latitude: null,
+                                        longitude: null,
+                                        coordsCount: 0
                                     });
                                 }
-                                // Collecter les échantillons de lieux originaux pour enrichissement futur
-                                placesData.get(normalizedKey).samples.add(event.place);
+                                
+                                const placeInfo = placesData.get(normalizedKey);
+                                placeInfo.samples.add(placeValue);
+                                
+                                // Capturer les coordonnées temporaires si disponibles
+                                if (typeof event.place === 'object' && 
+                                    event.place._tempLatitude !== undefined && 
+                                    event.place._tempLongitude !== undefined &&
+                                    event.place._tempLatitude !== null && 
+                                    event.place._tempLongitude !== null) {
+                                    
+                                    // Stocker les coordonnées (on pourrait faire une moyenne si plusieurs)
+                                    if (placeInfo.latitude === null) {
+                                        placeInfo.latitude = event.place._tempLatitude;
+                                        placeInfo.longitude = event.place._tempLongitude;
+                                        coordsExtracted++;
+                                    }
+                                    placeInfo.coordsCount++;
+                                }
                             }
                         }
                     }
@@ -499,42 +541,101 @@ export class CacheBuilder {
             }
         }
         
-        // Générer la structure familyTownsStore
+        // Phase 2 : Générer familyTownsStore avec coordonnées centralisées
         for (const [key, data] of placesData) {
-            // Extraire les composants depuis un échantillon pour avoir le nom formaté
+            // Extraire les composants géographiques
             const firstSample = Array.from(data.samples)[0] || '';
             const components = await extractPlaceComponents(firstSample);
             
-            // Construire townDisplay avec contexte géographique
+            // Construire townDisplay avec contexte
             const townName = components.town || key;
             let townDisplay = townName;
             
             if (components.department) {
-                // Ajouter le département si présent
                 townDisplay = `${townName} (${components.department})`;
             } else if (components.country && components.country !== 'France') {
-                // Ajouter le pays si ce n'est pas la France
                 townDisplay = `${townName} (${components.country})`;
             }
             
+            // Créer l'entrée avec coordonnées SI disponibles
             familyTownsStore[key] = {
-                town: townName,                      // Nom formaté via formatTownName
-                townDisplay: townDisplay,            // Nom avec contexte géographique
-                latitude: "",                        // Sera enrichi par geneafan
-                longitude: "",                       // Sera enrichi par geneafan
-                departement: components.department || "",  // Département extrait
-                country: components.country || "",         // Pays extrait  
-                departementColor: "",                // Sera enrichi par geneafan
-                countryColor: "",                    // Sera enrichi par geneafan
-                _samples: Array.from(data.samples).slice(0, 3) // Échantillons pour enrichissement
+                town: townName,
+                townDisplay: townDisplay,
+                // Coordonnées natives du GEDCOM (une seule fois par lieu !)
+                latitude: data.latitude !== null ? String(data.latitude) : "",
+                longitude: data.longitude !== null ? String(data.longitude) : "",
+                departement: components.department || "",
+                country: components.country || "",
+                departementColor: "",                  // Sera enrichi par geneafan
+                countryColor: "",                      // Sera enrichi par geneafan
+                _samples: Array.from(data.samples).slice(0, 3)
             };
+            
+            // Ajouter des métadonnées de tracking si coordonnées natives
+            if (data.latitude !== null && data.longitude !== null) {
+                familyTownsStore[key]._hasNativeCoords = true;
+                if (data.coordsCount > 1) {
+                    familyTownsStore[key]._coordsOccurrences = data.coordsCount;
+                }
+            }
         }
         
-        this._log(`✅ FamilyTownsStore généré: ${Object.keys(familyTownsStore).length} lieux`);
+        // Phase 3 : Logging et statistiques
+        const totalPlaces = Object.keys(familyTownsStore).length;
+        const placesWithCoords = coordsExtracted;
+        
+        this._log(`✅ FamilyTownsStore généré: ${totalPlaces} lieux uniques`);
+        
+        if (placesWithCoords > 0) {
+            const percentage = ((placesWithCoords / totalPlaces) * 100).toFixed(1);
+            this._log(`   📍 ${placesWithCoords} lieux avec coordonnées natives (${percentage}%)`);
+            this._log(`   💰 ${placesWithCoords} appels API geocoding économisés !`);
+            
+            // Exemples pour debug
+            const examples = Object.entries(familyTownsStore)
+                .filter(([_, data]) => data._hasNativeCoords)
+                .slice(0, 3);
+            
+            if (examples.length > 0 && this.options.verbose) {
+                this._log(`   📌 Exemples :`);
+                examples.forEach(([key, data]) => {
+                    this._log(`      - ${data.townDisplay}: ${data.latitude}, ${data.longitude}`);
+                });
+            }
+        } else {
+            this._log(`   ℹ️  Aucune coordonnée native trouvée dans ce fichier GEDCOM`);
+        }
+        
         return familyTownsStore;
     }
     
-    // Méthode _extractUniquePlaces supprimée - remplacée par _generateFamilyTownsStore
+    /**
+     * Extrait tous les lieux uniques (DEPRECATED - utilisé pour compatibilité)
+     * @private
+     */
+    _extractUniquePlaces(individualsCache, familiesCache) {
+        const places = new Set();
+        
+        // Lieux des individus
+        for (const individual of individualsCache.values()) {
+            if (individual.e) {
+                individual.e.forEach(event => {
+                    if (event.l) places.add(event.l);
+                });
+            }
+        }
+        
+        // Lieux des familles
+        for (const family of familiesCache.values()) {
+            if (family.e) {
+                family.e.forEach(event => {
+                    if (event.l) places.add(event.l);
+                });
+            }
+        }
+        
+        return places;
+    }
     
     /**
      * Génère les statistiques globales
@@ -585,7 +686,9 @@ export class CacheBuilder {
         };
     }
     
-    // Enrichissement géocodage géré par geneafan/familyTownsStore.js
+    // 🗑️ ENRICHISSEMENT GÉOCODAGE: Retiré - sera géré par geneafan/familyTownsStore.js
+    // Toutes les méthodes d'enrichissement ont été supprimées pour garder 
+    // read-gedcom-geneafan focalisé sur l'extraction pure des données GEDCOM
     
     _log(message) {
         if (this.options.verbose) {
