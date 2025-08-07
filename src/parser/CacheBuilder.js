@@ -62,6 +62,10 @@ export class CacheBuilder {
             this._log('Construction du cache des dépôts...');
             const repositoriesCache = await this._buildRepositoriesCache(enrichedData.repositories);
             
+            // Phase de référencement croisé : lier les notes/médias aux individus
+            this._log('Référencement croisé notes/médias ↔ individus...');
+            this._crossReferenceNotesAndMedia(enrichedData.individuals, notesCache, mediaCache);
+            
             // Générer familyTownsStore de base (données extraites sans enrichissement)
             const familyTownsStore = this.options.extractPlaces ? 
                 await this._generateFamilyTownsStore(enrichedData.individuals, familiesCache) : {};
@@ -464,6 +468,89 @@ export class CacheBuilder {
             });
         }
         return cache;
+    }
+    
+    /**
+     * Référencement croisé : remplit le champ 'individuals' dans les caches notes/médias
+     * @private
+     */
+    _crossReferenceNotesAndMedia(individualsData, notesCache, mediaCache) {
+        if (!Array.isArray(individualsData)) return;
+        
+        let noteLinks = 0;
+        let mediaLinks = 0;
+        
+        // Parcourir tous les individus pour collecter leurs références
+        for (const individual of individualsData) {
+            if (!individual.pointer) continue;
+            
+            // Traiter les références aux notes
+            if (individual.noteRefs && Array.isArray(individual.noteRefs)) {
+                for (const noteRef of individual.noteRefs) {
+                    const note = notesCache.get(noteRef);
+                    if (note) {
+                        if (!note.individuals) note.individuals = [];
+                        if (!note.individuals.includes(individual.pointer)) {
+                            note.individuals.push(individual.pointer);
+                            noteLinks++;
+                        }
+                    }
+                }
+            }
+            
+            // Traiter les références aux médias
+            if (individual.mediaRefs && Array.isArray(individual.mediaRefs)) {
+                for (const mediaRef of individual.mediaRefs) {
+                    const media = mediaCache.get(mediaRef);
+                    if (media) {
+                        if (!media.individuals) media.individuals = [];
+                        if (!media.individuals.includes(individual.pointer)) {
+                            media.individuals.push(individual.pointer);
+                            mediaLinks++;
+                        }
+                    }
+                }
+            }
+            
+            // Aussi traiter les notes/médias dans les événements
+            if (individual.events && Array.isArray(individual.events)) {
+                for (const event of individual.events) {
+                    // Notes dans les événements
+                    if (event.notes && Array.isArray(event.notes)) {
+                        for (const noteData of event.notes) {
+                            if (noteData.pointer) {
+                                const note = notesCache.get(noteData.pointer);
+                                if (note) {
+                                    if (!note.individuals) note.individuals = [];
+                                    if (!note.individuals.includes(individual.pointer)) {
+                                        note.individuals.push(individual.pointer);
+                                        noteLinks++;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Médias dans les événements
+                    if (event.multimedia && Array.isArray(event.multimedia)) {
+                        for (const mediaData of event.multimedia) {
+                            if (mediaData.pointer) {
+                                const media = mediaCache.get(mediaData.pointer);
+                                if (media) {
+                                    if (!media.individuals) media.individuals = [];
+                                    if (!media.individuals.includes(individual.pointer)) {
+                                        media.individuals.push(individual.pointer);
+                                        mediaLinks++;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        this._log(`   ✅ Référencement croisé: ${noteLinks} liens notes, ${mediaLinks} liens médias`);
     }
     
     /**

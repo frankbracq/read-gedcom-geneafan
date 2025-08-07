@@ -120,6 +120,10 @@ export class DataExtractor {
         // Fusionner tous les événements
         const allEvents = [...events, ...familyEvents];
         
+        // Extraire les références aux notes et médias de l'individu
+        const noteRefs = this._extractIndividualNoteRefs(individualSelection);
+        const mediaRefs = this._extractIndividualMediaRefs(individualSelection);
+        
         // === FORMAT GENEAFAN OPTIMISÉ ===
         const result = {
             pointer,
@@ -138,6 +142,10 @@ export class DataExtractor {
             
             // Événements complets
             events: allEvents,
+            
+            // Références aux notes et médias
+            noteRefs,   // Array des pointeurs vers les notes (@N123@)
+            mediaRefs,  // Array des pointeurs vers les médias (@M123@)
             
             // 🚀 ARCHITECTURE SOLIDE : Attacher l'objet read-gedcom pour APIs natives
             readGedcomIndividual: individualSelection,
@@ -787,6 +795,81 @@ export class DataExtractor {
         }
         
         return 'other';
+    }
+    
+    /**
+     * Extrait les références aux notes d'un individu
+     * @private
+     */
+    _extractIndividualNoteRefs(individualSelection) {
+        const noteRefs = [];
+        
+        try {
+            // Notes au niveau individu (références @N123@)
+            const noteSelection = individualSelection.getNote();
+            if (noteSelection.length > 0) {
+                noteSelection.arraySelect().forEach(note => {
+                    const notePointer = note.value()[0];
+                    if (notePointer && notePointer.startsWith('@')) {
+                        noteRefs.push(notePointer);
+                    }
+                });
+            }
+            
+            // Notes embarquées (NOTE directes)
+            const embeddedNotes = individualSelection.get('NOTE');
+            if (embeddedNotes && embeddedNotes.length > 0) {
+                embeddedNotes.arraySelect().forEach(note => {
+                    const text = note.value()[0];
+                    if (text && text.startsWith('@')) {
+                        // C'est une référence
+                        noteRefs.push(text);
+                    }
+                });
+            }
+        } catch (error) {
+            this._log(`⚠️ Erreur extraction références notes individu: ${error.message}`);
+        }
+        
+        return noteRefs;
+    }
+    
+    /**
+     * Extrait les références aux médias d'un individu
+     * @private
+     */
+    _extractIndividualMediaRefs(individualSelection) {
+        const mediaRefs = [];
+        
+        try {
+            // Médias via getMultimedia()
+            if (typeof individualSelection.getMultimedia === 'function') {
+                const multimediaSelection = individualSelection.getMultimedia();
+                if (multimediaSelection.length > 0) {
+                    multimediaSelection.arraySelect().forEach(media => {
+                        const mediaPointer = media.value()[0];
+                        if (mediaPointer && mediaPointer.startsWith('@')) {
+                            mediaRefs.push(mediaPointer);
+                        }
+                    });
+                }
+            }
+            
+            // Médias via get('OBJE')
+            const objeSelection = individualSelection.get('OBJE');
+            if (objeSelection && objeSelection.length > 0) {
+                objeSelection.arraySelect().forEach(media => {
+                    const mediaPointer = media.value()[0];
+                    if (mediaPointer && mediaPointer.startsWith('@')) {
+                        mediaRefs.push(mediaPointer);
+                    }
+                });
+            }
+        } catch (error) {
+            this._log(`⚠️ Erreur extraction références médias individu: ${error.message}`);
+        }
+        
+        return mediaRefs;
     }
     
     _extractMetadata(rootSelection) { return {}; }
