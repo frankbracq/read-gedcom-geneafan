@@ -49,12 +49,14 @@ export class DataExtractor {
         
         if (this.options.extractMedia) {
             this._log('Extraction des médias...');
-            result.media = await this._extractMedia(rootSelection);
+            result.media = this._extractMedia(rootSelection);
+            this._log(`✅ Médias extraits: ${result.media.length}`);
         }
         
         if (this.options.extractNotes) {
             this._log('Extraction des notes...');
-            result.notes = await this._extractNotes(rootSelection);
+            result.notes = this._extractNotes(rootSelection);
+            this._log(`✅ Notes extraites: ${result.notes.length}`);
         }
         
         this._log('Extraction des métadonnées...');
@@ -448,8 +450,345 @@ export class DataExtractor {
     }
     _extractSources(rootSelection) { return []; }
     _extractRepositories(rootSelection) { return []; }
-    _extractMedia(rootSelection) { return []; }
-    _extractNotes(rootSelection) { return []; }
+    
+    /**
+     * Extrait tous les médias (OBJE records) du GEDCOM
+     * @private
+     */
+    _extractMedia(rootSelection) {
+        console.log('[DataExtractor] DEBUT _extractMedia');
+        const mediaList = [];
+        console.log('[DataExtractor] rootSelection type:', typeof rootSelection);
+        console.log('[DataExtractor] rootSelection methods:', Object.getOwnPropertyNames(Object.getPrototypeOf(rootSelection)).slice(0, 10));
+        
+        try {
+            console.log('[DataExtractor] Début extraction médias...');
+            const multimediaRecords = rootSelection.getMultimediaRecord().arraySelect();
+            console.log(`[DataExtractor] Extraction de ${multimediaRecords.length} enregistrements MULTIMEDIA`);
+            
+            for (let i = 0; i < multimediaRecords.length; i++) {
+                const mediaRecord = multimediaRecords[i];
+                const mediaData = this._extractSingleMedia(mediaRecord);
+                if (mediaData) {
+                    mediaList.push(mediaData);
+                }
+            }
+            
+        } catch (error) {
+            this._log(`⚠️ Erreur extraction médias: ${error.message}`);
+        }
+        
+        return mediaList;
+    }
+    
+    /**
+     * Extrait un enregistrement MULTIMEDIA complet
+     * @private
+     */
+    _extractSingleMedia(mediaRecord) {
+        try {
+            const pointer = mediaRecord.pointer()[0];
+            if (!pointer) return null;
+            
+            this._log(`   Extraction média ${pointer}...`);
+            
+            // Extraire FILE via getFileReference() ou get('FILE')
+            let file = null;
+            const fileSelection = mediaRecord.getFileReference();
+            if (fileSelection.length > 0) {
+                file = fileSelection.value()[0];
+            } else {
+                // Méthode alternative via get
+                const fileViaGet = mediaRecord.get('FILE');
+                if (fileViaGet && fileViaGet.length > 0) {
+                    file = fileViaGet.value()[0];
+                }
+            }
+            
+            // Extraire TITL via get('TITL')
+            let title = null;
+            const titleViaGet = mediaRecord.get('TITL');
+            if (titleViaGet && titleViaGet.length > 0) {
+                title = titleViaGet.value()[0];
+            }
+            
+            // Extraire FORM
+            const format = this._extractMediaFormat(mediaRecord);
+            
+            const mediaData = {
+                pointer,
+                file,
+                title,
+                format,
+                notes: this._extractMediaNotes(mediaRecord),
+                sources: this._extractMediaSources(mediaRecord),
+                
+                // Données additionnelles
+                hasBlob: this._hasMediaBlob(mediaRecord),
+                type: this._getMediaType(format, file)
+            };
+            
+            this._log(`   ✅ Média ${pointer}: ${title || 'Sans titre'} (${format || 'format inconnu'})`);
+            return mediaData;
+            
+        } catch (error) {
+            this._log(`⚠️ Erreur extraction média individuel: ${error.message}`);
+            return null;
+        }
+    }
+    
+    /**
+     * Extrait le format d'un média
+     * @private
+     */
+    _extractMediaFormat(mediaRecord) {
+        try {
+            // Essayer différentes méthodes pour obtenir le format
+            const formatMethods = ['getFormat', 'getForm'];
+            
+            for (const method of formatMethods) {
+                if (typeof mediaRecord[method] === 'function') {
+                    const formatSelection = mediaRecord[method]();
+                    if (formatSelection.length > 0) {
+                        return formatSelection.value()[0];
+                    }
+                }
+            }
+            
+            // Méthode générique via get('FORM')
+            const formSelection = mediaRecord.get('FORM');
+            if (formSelection && formSelection.length > 0) {
+                return formSelection.value()[0];
+            }
+            
+        } catch (error) {
+            this._log(`⚠️ Erreur extraction format média: ${error.message}`);
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Extrait toutes les notes (NOTE records) du GEDCOM
+     * @private
+     */
+    _extractNotes(rootSelection) {
+        console.log('[DataExtractor] DEBUT _extractNotes');
+        const notesList = [];
+        
+        try {
+            console.log('[DataExtractor] Début extraction notes...');
+            const noteRecords = rootSelection.getNoteRecord().arraySelect();
+            console.log(`[DataExtractor] Extraction de ${noteRecords.length} enregistrements NOTE`);
+            
+            for (let i = 0; i < noteRecords.length; i++) {
+                const noteRecord = noteRecords[i];
+                const noteData = this._extractSingleNote(noteRecord);
+                if (noteData) {
+                    notesList.push(noteData);
+                }
+            }
+            
+        } catch (error) {
+            this._log(`⚠️ Erreur extraction notes: ${error.message}`);
+        }
+        
+        return notesList;
+    }
+    
+    /**
+     * Extrait un enregistrement NOTE complet
+     * @private
+     */
+    _extractSingleNote(noteRecord) {
+        try {
+            const pointer = noteRecord.pointer()[0];
+            if (!pointer) return null;
+            
+            this._log(`   Extraction note ${pointer}...`);
+            
+            // Extraire le texte de la note (avec CONT/CONC)
+            const noteText = this._extractNoteText(noteRecord);
+            
+            if (!noteText) {
+                this._log(`   ⚠️ Note ${pointer} sans texte, ignorée`);
+                return null;
+            }
+            
+            const noteData = {
+                pointer,
+                text: noteText,
+                sources: this._extractNoteSources(noteRecord)
+            };
+            
+            this._log(`   ✅ Note ${pointer}: ${noteText.substring(0, 50)}...`);
+            return noteData;
+            
+        } catch (error) {
+            this._log(`⚠️ Erreur extraction note individuelle: ${error.message}`);
+            return null;
+        }
+    }
+    
+    /**
+     * Extrait le texte complet d'une note (avec CONT/CONC)
+     * @private
+     */
+    _extractNoteText(noteRecord) {
+        try {
+            // Méthode 1 : via value() qui gère automatiquement CONT/CONC
+            const textValue = noteRecord.value();
+            if (textValue && textValue.length > 0 && textValue[0]) {
+                return textValue[0];
+            }
+            
+        } catch (error) {
+            this._log(`⚠️ Erreur extraction texte note: ${error.message}`);
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Extrait les notes d'un enregistrement MULTIMEDIA
+     * @private
+     */
+    _extractMediaNotes(mediaRecord) {
+        const notes = [];
+        
+        try {
+            // Utiliser get('NOTE') au lieu de getNote()
+            const noteSelection = mediaRecord.get('NOTE');
+            if (noteSelection && noteSelection.length > 0) {
+                noteSelection.arraySelect().forEach(note => {
+                    const notePointer = note.value()[0];
+                    if (notePointer) {
+                        notes.push({
+                            type: 'reference',
+                            pointer: notePointer
+                        });
+                    }
+                });
+            }
+            
+        } catch (error) {
+            this._log(`⚠️ Erreur extraction notes média: ${error.message}`);
+        }
+        
+        return notes;
+    }
+    
+    /**
+     * Extrait les sources d'un enregistrement MULTIMEDIA
+     * @private
+     */
+    _extractMediaSources(mediaRecord) {
+        const sources = [];
+        
+        try {
+            // Utiliser get('SOUR') au lieu de getSource()
+            const sourceSelection = mediaRecord.get('SOUR');
+            if (sourceSelection && sourceSelection.length > 0) {
+                sourceSelection.arraySelect().forEach(source => {
+                    const sourcePointer = source.value()[0];
+                    if (sourcePointer) {
+                        sources.push({
+                            pointer: sourcePointer
+                        });
+                    }
+                });
+            }
+            
+        } catch (error) {
+            this._log(`⚠️ Erreur extraction sources média: ${error.message}`);
+        }
+        
+        return sources;
+    }
+    
+    /**
+     * Extrait les sources d'un enregistrement NOTE
+     * @private
+     */
+    _extractNoteSources(noteRecord) {
+        const sources = [];
+        
+        try {
+            // Utiliser get('SOUR') au lieu de getSource()
+            const sourceSelection = noteRecord.get('SOUR');
+            if (sourceSelection && sourceSelection.length > 0) {
+                sourceSelection.arraySelect().forEach(source => {
+                    const sourcePointer = source.value()[0];
+                    if (sourcePointer) {
+                        sources.push({
+                            pointer: sourcePointer
+                        });
+                    }
+                });
+            }
+            
+        } catch (error) {
+            this._log(`⚠️ Erreur extraction sources note: ${error.message}`);
+        }
+        
+        return sources;
+    }
+    
+    /**
+     * Vérifie si un média a des données BLOB embarquées
+     * @private
+     */
+    _hasMediaBlob(mediaRecord) {
+        try {
+            const blobSelection = mediaRecord.get('BLOB');
+            return blobSelection && blobSelection.length > 0;
+        } catch (error) {
+            return false;
+        }
+    }
+    
+    /**
+     * Détermine le type de média à partir du format et du fichier
+     * @private
+     */
+    _getMediaType(format, file) {
+        if (!format && !file) return 'unknown';
+        
+        const formatLower = (format || '').toLowerCase();
+        const fileExt = file ? file.split('.').pop()?.toLowerCase() : '';
+        
+        // Types d'images
+        if (['jpeg', 'jpg', 'png', 'gif', 'bmp', 'tiff', 'pict', 'webp'].includes(formatLower) ||
+            ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tif', 'tiff', 'webp'].includes(fileExt)) {
+            return 'image';
+        }
+        
+        // Types audio
+        if (['wav', 'mp3', 'aiff', 'au', 'ogg', 'm4a'].includes(formatLower) ||
+            ['wav', 'mp3', 'aif', 'aiff', 'au', 'ogg', 'm4a'].includes(fileExt)) {
+            return 'audio';
+        }
+        
+        // Types vidéo
+        if (['mov', 'mp4', 'mpeg', 'avi', 'wmv', 'flv'].includes(formatLower) ||
+            ['mov', 'mp4', 'mpg', 'mpeg', 'avi', 'wmv', 'flv'].includes(fileExt)) {
+            return 'video';
+        }
+        
+        // Documents
+        if (['pdf', 'doc', 'docx', 'txt', 'rtf'].includes(formatLower) ||
+            ['pdf', 'doc', 'docx', 'txt', 'rtf'].includes(fileExt)) {
+            return 'document';
+        }
+        
+        // URL
+        if (file && (file.startsWith('http://') || file.startsWith('https://') || file.startsWith('ftp://'))) {
+            return 'url';
+        }
+        
+        return 'other';
+    }
+    
     _extractMetadata(rootSelection) { return {}; }
     
     _extractPhoneticName(nameSelection) { return null; }
@@ -546,9 +885,150 @@ export class DataExtractor {
     }
     _extractAge(ageSelection) { return null; }
     _extractCause(eventSelection) { return null; }
-    _extractEventNotes(eventSelection) { return []; }
-    _extractEventSources(eventSelection) { return []; }
-    _extractEventMultimedia(eventSelection) { return []; }
+    /**
+     * Extrait les notes d'un événement ou attribut
+     * @private
+     */
+    _extractEventNotes(eventSelection) {
+        const notes = [];
+        
+        try {
+            // Notes liées via référence (@N1@)
+            const noteRefs = eventSelection.getNote();
+            if (noteRefs.length > 0) {
+                noteRefs.arraySelect().forEach(noteRef => {
+                    const notePointer = noteRef.value()[0];
+                    if (notePointer) {
+                        notes.push({
+                            type: 'reference',
+                            pointer: notePointer
+                        });
+                    }
+                });
+            }
+            
+            // Notes embarquées directement dans l'événement
+            const embeddedNotes = eventSelection.get('NOTE');
+            if (embeddedNotes && embeddedNotes.length > 0) {
+                embeddedNotes.arraySelect().forEach(note => {
+                    const text = note.value()[0];
+                    if (text && !text.startsWith('@')) { // Pas une référence
+                        notes.push({
+                            type: 'embedded',
+                            text: text
+                        });
+                    }
+                });
+            }
+            
+        } catch (error) {
+            this._log(`⚠️ Erreur extraction notes événement: ${error.message}`);
+        }
+        
+        return notes;
+    }
+    
+    /**
+     * Extrait les sources d'un événement ou attribut
+     * @private
+     */
+    _extractEventSources(eventSelection) {
+        const sources = [];
+        
+        try {
+            const sourceSelection = eventSelection.getSource();
+            if (sourceSelection.length > 0) {
+                sourceSelection.arraySelect().forEach(source => {
+                    const sourceData = {
+                        pointer: source.value()[0],
+                        page: null,
+                        quality: null
+                    };
+                    
+                    // Page
+                    const pageSelection = source.get('PAGE');
+                    if (pageSelection && pageSelection.length > 0) {
+                        sourceData.page = pageSelection.value()[0];
+                    }
+                    
+                    // Qualité (QUAY)
+                    const qualitySelection = source.get('QUAY');
+                    if (qualitySelection && qualitySelection.length > 0) {
+                        sourceData.quality = parseInt(qualitySelection.value()[0]);
+                    }
+                    
+                    sources.push(sourceData);
+                });
+            }
+            
+        } catch (error) {
+            this._log(`⚠️ Erreur extraction sources événement: ${error.message}`);
+        }
+        
+        return sources;
+    }
+    
+    /**
+     * Extrait les médias d'un événement ou attribut
+     * @private
+     */
+    _extractEventMultimedia(eventSelection) {
+        const multimedia = [];
+        
+        try {
+            // Médias liés via référence (@M1@) - méthode alternative
+            const multimediaRefs = eventSelection.getMultimedia ? eventSelection.getMultimedia() : eventSelection.get('OBJE');
+            if (multimediaRefs.length > 0) {
+                multimediaRefs.arraySelect().forEach(mediaRef => {
+                    const mediaPointer = mediaRef.value()[0];
+                    if (mediaPointer) {
+                        multimedia.push({
+                            type: 'reference',
+                            pointer: mediaPointer
+                        });
+                    }
+                });
+            }
+            
+            // Médias embarqués directement dans l'événement
+            const embeddedMedia = eventSelection.get('OBJE');
+            if (embeddedMedia && embeddedMedia.length > 0) {
+                embeddedMedia.arraySelect().forEach(media => {
+                    const mediaData = {
+                        type: 'embedded',
+                        file: null,
+                        format: null,
+                        title: null
+                    };
+                    
+                    // FILE
+                    const fileSelection = media.get('FILE');
+                    if (fileSelection && fileSelection.length > 0) {
+                        mediaData.file = fileSelection.value()[0];
+                    }
+                    
+                    // FORM
+                    const formSelection = media.get('FORM');
+                    if (formSelection && formSelection.length > 0) {
+                        mediaData.format = formSelection.value()[0];
+                    }
+                    
+                    // TITL
+                    const titleSelection = media.get('TITL');
+                    if (titleSelection && titleSelection.length > 0) {
+                        mediaData.title = titleSelection.value()[0];
+                    }
+                    
+                    multimedia.push(mediaData);
+                });
+            }
+            
+        } catch (error) {
+            this._log(`⚠️ Erreur extraction médias événement: ${error.message}`);
+        }
+        
+        return multimedia;
+    }
     _extractCustomEventType(eventSelection) { return null; }
     /**
      * Extrait les détails d'un attribut (OCCU, RESI, etc.)
