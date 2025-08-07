@@ -228,6 +228,11 @@ export class DataExtractor {
         const otherEvents = individualSelection.getEventOther();
         events.push(...this._extractEventDetails(otherEvents, 'custom'));
         
+        // 🚀 NOUVEAUX ATTRIBUTS COMME ÉVÉNEMENTS 
+        // Extraire les attributs et les traiter comme des événements
+        const attributes = this._extractAllAttributes(individualSelection);
+        events.push(...attributes);
+        
         return events.filter(event => event !== null);
     }
     
@@ -545,7 +550,31 @@ export class DataExtractor {
     _extractEventSources(eventSelection) { return []; }
     _extractEventMultimedia(eventSelection) { return []; }
     _extractCustomEventType(eventSelection) { return null; }
-    _extractAttributeDetails(attrSelection, type) { return []; }
+    /**
+     * Extrait les détails d'un attribut (OCCU, RESI, etc.)
+     * @private
+     */
+    _extractAttributeDetails(attrSelection, type) {
+        const attributes = [];
+        const attrArray = attrSelection.arraySelect();
+        
+        for (let i = 0; i < attrArray.length; i++) {
+            const attr = attrArray[i];
+            const attrData = {
+                type: type,
+                value: attr.value()[0] || null,  // Valeur de l'attribut (ex: "Forgeron" pour occupation)
+                date: this._extractDate(attr.getDate()),
+                place: this._extractPlace(attr.getPlace()),
+                age: typeof attr.getAge === 'function' ? this._extractAge(attr.getAge()) : null,
+                notes: this.options.extractNotes ? this._extractEventNotes(attr) : [],
+                sources: this.options.extractSources ? this._extractEventSources(attr) : []
+            };
+            
+            attributes.push(attrData);
+        }
+        
+        return attributes;
+    }
     _extractFamilyAsSpouse(individualSelection) { return []; }
     _extractAssociations(individualSelection) { return []; }
     _extractMultimedia(individualSelection) { return []; }

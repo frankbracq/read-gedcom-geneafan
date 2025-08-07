@@ -17,18 +17,19 @@ const EVENT_TYPE_COMPRESSION = {
     'marriage': 'fm',
     'divorce': 'fv',
     'baptism': 'ft',
+    'christening': 'ft',  // Même code que baptism
     'adoption': 'fa',
     'child-birth': 'fc',
     'today': 'fy',
     
     // Événements professionnels (professional)
     'occupation': 'po',
-    'promotion': 'pp',
-    'retirement': 'pr',
-    'business-creation': 'pb',
+    'promotion': 'pn',       // Changé pp→pn pour éviter conflit avec property
+    'retirement': 'pt',      // Changé pr→pt pour éviter conflit avec residence
+    'business-creation': 'pc',
     
     // Événements éducatifs (education)
-    'education': 'ee',
+    'education': 'pe',       // Changé ee→pe pour cohérence
     'diploma': 'ed',
     'graduation': 'eg',
     'certification': 'ec',
@@ -47,13 +48,47 @@ const EVENT_TYPE_COMPRESSION = {
     
     // Événements géographiques (geographic)
     'migration': 'gm',
-    'residence': 'gr',
+    'residence': 'pr',      // Changé gr→pr pour cohérence avec extraction
     'travel': 'gt',
     
     // Événements personnels (personal)
     'illness': 'pi',
-    'recovery': 'pr',
-    'military-service': 'pm'
+    'recovery': 'py',       // Changé pr→py (recovery)
+    'military-service': 'pm',
+    
+    // Événements administratifs (administrative) 
+    'immigration': 'ai',
+    'naturalization': 'an',
+    'census': 'ac',
+    
+    // Événements religieux étendus (religious)
+    'confirmation': 'rc',
+    'first-communion': 'rf',
+    'bar-mitzvah': 'rb',
+    'bat-mitzvah': 'ra',
+    'adult-christening': 'rh',
+    
+    // Événements supplémentaires read-gedcom
+    'burial': 'bu',
+    'cremation': 'cr',
+    'emigration': 'em',
+    'census': 'ac',     // Utilisé notre mapping administratif
+    'probate': 'pb',    // Utilise pb maintenant que business-creation est changé
+    'will': 'pw',
+    
+    // Attributs (traités comme événements)
+    'caste': 'ca',
+    'physical-description': 'pd',
+    'id-number': 'in',
+    'nationality': 'na',
+    'children-count': 'cc',
+    'marriage-count': 'mc',
+    'property': 'pp',   // Garde pp pour property
+    'religion': 'rl',
+    'title': 'ti',
+    
+    // Événements personnalisés
+    'custom': 'cx'      // Pour les événements EVEN génériques
 };
 
 /**

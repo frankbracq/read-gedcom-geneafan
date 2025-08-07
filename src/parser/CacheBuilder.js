@@ -3,8 +3,8 @@
  * Transforme les données enrichies en caches compressées
  */
 
-import { compressEventArray } from '../compression/eventCompression.js';
-import { compressGeneaFanIndividual, compressFields } from '../compression/fieldCompression.js';
+import { compressEventArray, EVENT_TYPE_COMPRESSION } from '../compression/eventCompression.js';
+import { compressIndividualFields, conditionalCompressFields } from '../compression/fieldCompression.js';
 import { calculateQualityScore, calculateCacheQualityStats } from '../utils/qualityScoring.js';
 import { normalizePlace, extractPlaceComponents } from '../utils/geoUtils.js';
 
@@ -291,19 +291,8 @@ export class CacheBuilder {
      * @private
      */
     _getEventTypeCode(type) {
-        const EVENT_CODES = {
-            'birth': 'fb',
-            'death': 'fd', 
-            'marriage': 'fm',
-            'divorce': 'fv',
-            'child-birth': 'fc',
-            'christening': 'fc',
-            'baptism': 'fb',
-            'occupation': 'po',
-            'residence': 'pr'
-        };
-        
-        return EVENT_CODES[type] || type;
+        // Utiliser le dictionnaire complet de eventCompression.js
+        return EVENT_TYPE_COMPRESSION[type] || type;
     }
     
     /**
