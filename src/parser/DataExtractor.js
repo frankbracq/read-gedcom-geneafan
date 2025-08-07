@@ -464,15 +464,12 @@ export class DataExtractor {
      * @private
      */
     _extractMedia(rootSelection) {
-        console.log('[DataExtractor] DEBUT _extractMedia');
         const mediaList = [];
-        console.log('[DataExtractor] rootSelection type:', typeof rootSelection);
-        console.log('[DataExtractor] rootSelection methods:', Object.getOwnPropertyNames(Object.getPrototypeOf(rootSelection)).slice(0, 10));
         
         try {
-            console.log('[DataExtractor] Début extraction médias...');
             const multimediaRecords = rootSelection.getMultimediaRecord().arraySelect();
-            console.log(`[DataExtractor] Extraction de ${multimediaRecords.length} enregistrements MULTIMEDIA`);
+            // Log de synthèse uniquement
+            this._log(`Extraction de ${multimediaRecords.length} enregistrements MULTIMEDIA...`);
             
             for (let i = 0; i < multimediaRecords.length; i++) {
                 const mediaRecord = multimediaRecords[i];
@@ -498,7 +495,8 @@ export class DataExtractor {
             const pointer = mediaRecord.pointer()[0];
             if (!pointer) return null;
             
-            this._log(`   Extraction média ${pointer}...`);
+            // Extraction silencieuse (log désactivé pour éviter la pollution)
+            // this._log(`   Extraction média ${pointer}...`);
             
             // Extraire FILE via getFileReference() ou get('FILE')
             let file = null;
@@ -536,7 +534,8 @@ export class DataExtractor {
                 type: this._getMediaType(format, file)
             };
             
-            this._log(`   ✅ Média ${pointer}: ${title || 'Sans titre'} (${format || 'format inconnu'})`);
+            // Log désactivé pour éviter la pollution console
+            // this._log(`   ✅ Média ${pointer}: ${title || 'Sans titre'} (${format || 'format inconnu'})`);
             return mediaData;
             
         } catch (error) {
@@ -581,13 +580,12 @@ export class DataExtractor {
      * @private
      */
     _extractNotes(rootSelection) {
-        console.log('[DataExtractor] DEBUT _extractNotes');
         const notesList = [];
         
         try {
-            console.log('[DataExtractor] Début extraction notes...');
             const noteRecords = rootSelection.getNoteRecord().arraySelect();
-            console.log(`[DataExtractor] Extraction de ${noteRecords.length} enregistrements NOTE`);
+            // Log de synthèse uniquement
+            this._log(`Extraction de ${noteRecords.length} enregistrements NOTE...`);
             
             for (let i = 0; i < noteRecords.length; i++) {
                 const noteRecord = noteRecords[i];
@@ -613,7 +611,8 @@ export class DataExtractor {
             const pointer = noteRecord.pointer()[0];
             if (!pointer) return null;
             
-            this._log(`   Extraction note ${pointer}...`);
+            // Extraction silencieuse (log désactivé pour éviter la pollution)
+            // this._log(`   Extraction note ${pointer}...`);
             
             // Extraire le texte de la note (avec CONT/CONC)
             const noteText = this._extractNoteText(noteRecord);
@@ -629,7 +628,8 @@ export class DataExtractor {
                 sources: this._extractNoteSources(noteRecord)
             };
             
-            this._log(`   ✅ Note ${pointer}: ${noteText.substring(0, 50)}...`);
+            // Log désactivé pour éviter la pollution console
+            // this._log(`   ✅ Note ${pointer}: ${noteText.substring(0, 50)}...`);
             return noteData;
             
         } catch (error) {
