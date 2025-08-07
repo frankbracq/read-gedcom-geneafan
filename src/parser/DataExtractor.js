@@ -1019,8 +1019,9 @@ export class DataExtractor {
         const sources = [];
         
         try {
-            const sourceSelection = eventSelection.getSource();
-            if (sourceSelection.length > 0) {
+            // Utiliser get('SOUR') au lieu de getSource() qui n'existe pas
+            const sourceSelection = eventSelection.get('SOUR');
+            if (sourceSelection && sourceSelection.length > 0) {
                 sourceSelection.arraySelect().forEach(source => {
                     const sourceData = {
                         pointer: source.value()[0],
