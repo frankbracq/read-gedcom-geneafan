@@ -498,6 +498,23 @@ export class CacheBuilder {
                 }
             }
             
+            // Traiter les notes inline
+            if (individual.inlineNotes && Array.isArray(individual.inlineNotes)) {
+                for (const inlineNote of individual.inlineNotes) {
+                    // Ajouter la note inline au cache des notes
+                    if (!notesCache.has(inlineNote.id)) {
+                        notesCache.set(inlineNote.id, {
+                            text: inlineNote.text,
+                            type: inlineNote.type || 'individual',
+                            date: null,
+                            author: null,
+                            individuals: [individual.pointer]
+                        });
+                        noteLinks++;
+                    }
+                }
+            }
+            
             // Traiter les références aux médias
             if (individual.mediaRefs && Array.isArray(individual.mediaRefs)) {
                 for (const mediaRef of individual.mediaRefs) {

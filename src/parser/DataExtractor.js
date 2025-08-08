@@ -121,7 +121,7 @@ export class DataExtractor {
         const allEvents = [...events, ...familyEvents];
         
         // Extraire les références aux notes et médias de l'individu
-        const noteRefs = this._extractIndividualNoteRefs(individualSelection);
+        const notesData = this._extractIndividualNotes(individualSelection);
         const mediaRefs = this._extractIndividualMediaRefs(individualSelection);
         
         // === FORMAT GENEAFAN OPTIMISÉ ===
@@ -143,8 +143,9 @@ export class DataExtractor {
             // Événements complets
             events: allEvents,
             
-            // Références aux notes et médias
-            noteRefs,   // Array des pointeurs vers les notes (@N123@)
+            // Notes (références ET inline)
+            noteRefs: notesData.refs,      // Array des pointeurs vers les notes (@N123@)
+            inlineNotes: notesData.inline,  // Array des notes inline complètes
             mediaRefs,  // Array des pointeurs vers les médias (@M123@)
             
             // 🚀 ARCHITECTURE SOLIDE : Attacher l'objet read-gedcom pour APIs natives
@@ -798,40 +799,73 @@ export class DataExtractor {
     }
     
     /**
-     * Extrait les références aux notes d'un individu
+     * Extrait les notes d'un individu (références ET inline)
      * @private
      */
-    _extractIndividualNoteRefs(individualSelection) {
+    _extractIndividualNotes(individualSelection) {
         const noteRefs = [];
+        const inlineNotes = [];
         
         try {
-            // Notes au niveau individu (références @N123@)
+            // Notes au niveau individu (NOTE directes)
             const noteSelection = individualSelection.getNote();
             if (noteSelection.length > 0) {
                 noteSelection.arraySelect().forEach(note => {
-                    const notePointer = note.value()[0];
-                    if (notePointer && notePointer.startsWith('@')) {
-                        noteRefs.push(notePointer);
+                    const noteValue = note.value()[0];
+                    if (!noteValue) return;
+                    
+                    if (noteValue.startsWith('@')) {
+                        // C'est une référence vers une note externe
+                        noteRefs.push(noteValue);
+                    } else {
+                        // C'est une note inline avec son texte complet
+                        const fullText = this._extractNoteText(note);
+                        if (fullText) {
+                            inlineNotes.push({
+                                text: fullText,
+                                type: 'individual',
+                                // Générer un ID unique pour cette note inline
+                                id: `INLINE_${individualSelection.pointer()[0]}_${inlineNotes.length}`
+                            });
+                        }
                     }
                 });
             }
             
-            // Notes embarquées (NOTE directes)
+            // Vérifier aussi avec get('NOTE') pour couvrir tous les cas
             const embeddedNotes = individualSelection.get('NOTE');
             if (embeddedNotes && embeddedNotes.length > 0) {
                 embeddedNotes.arraySelect().forEach(note => {
                     const text = note.value()[0];
-                    if (text && text.startsWith('@')) {
-                        // C'est une référence
-                        noteRefs.push(text);
+                    if (!text) return;
+                    
+                    if (text.startsWith('@')) {
+                        // C'est une référence - éviter les doublons
+                        if (!noteRefs.includes(text)) {
+                            noteRefs.push(text);
+                        }
+                    } else {
+                        // C'est une note inline
+                        const fullText = this._extractNoteText(note);
+                        if (fullText) {
+                            inlineNotes.push({
+                                text: fullText,
+                                type: 'individual', 
+                                id: `INLINE_${individualSelection.pointer()[0]}_${inlineNotes.length}`
+                            });
+                        }
                     }
                 });
             }
         } catch (error) {
-            this._log(`⚠️ Erreur extraction références notes individu: ${error.message}`);
+            this._log(`⚠️ Erreur extraction notes individu: ${error.message}`);
         }
         
-        return noteRefs;
+        if (inlineNotes.length > 0) {
+            this._log(`   📝 ${inlineNotes.length} notes inline trouvées pour ${individualSelection.pointer()[0]}`);
+        }
+        
+        return { refs: noteRefs, inline: inlineNotes };
     }
     
     /**
