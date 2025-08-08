@@ -1635,16 +1635,19 @@ export class DataExtractor {
      */
     _configurePlacFormat(rootSelection) {
         try {
-            // Chercher l'en-tête PLAC au niveau root
-            const placSelection = rootSelection.get('PLAC');
-            if (placSelection && placSelection.length > 0) {
-                const formSelection = placSelection.get('FORM');
-                if (formSelection && formSelection.length > 0) {
-                    const placForm = formSelection.value()[0];
-                    if (placForm) {
-                        this._log(`Format PLAC détecté: "${placForm}"`);
-                        setPlacFormat(placForm);
-                        return;
+            // Chercher l'en-tête HEAD puis PLAC
+            const headSelection = rootSelection.getHeader();
+            if (headSelection && headSelection.length > 0) {
+                const placSelection = headSelection.get('PLAC');
+                if (placSelection && placSelection.length > 0) {
+                    const formSelection = placSelection.get('FORM');
+                    if (formSelection && formSelection.length > 0) {
+                        const placForm = formSelection.value()[0];
+                        if (placForm) {
+                            this._log(`Format PLAC détecté: "${placForm}"`);
+                            setPlacFormat(placForm);
+                            return;
+                        }
                     }
                 }
             }
