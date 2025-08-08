@@ -283,6 +283,44 @@ export class CacheBuilder {
         if (event.spouseId) metadata.s = event.spouseId;
         if (event.childId) metadata.c = event.childId;
         
+        // [NOUVEAU] Ajouter la valeur pour les attributs (occupation, etc.)
+        if (event.value) {
+            metadata.v = event.value;
+        }
+        
+        // [NOUVEAU] Ajouter le customType pour les événements EVEN
+        if (event.customType) {
+            metadata.ct = event.customType;
+        }
+        
+        // [NOUVEAU] Ajouter les IDs de notes si présents
+        if (event.noteIds && event.noteIds.length > 0) {
+            metadata.n = event.noteIds;
+        }
+        
+        // [NOUVEAU] Ajouter les cérémonies multiples pour les mariages fusionnés
+        if (event.ceremonies && event.ceremonies.length > 0) {
+            metadata.ceremonies = await Promise.all(event.ceremonies.map(async c => {
+                const ceremony = {
+                    t: c.type === 'civil' ? 'c' : 'r',  // c=civil, r=religious
+                    d: this._compressDate(c.date),
+                    l: c.place ? await this._normalizePlace(c.place) : undefined
+                };
+                
+                // [NOUVEAU] Préserver le TYPE original (Religious marriage, etc.)
+                if (c.marriageType) {
+                    ceremony.mt = c.marriageType; // mt = marriageType
+                }
+                
+                // [NOUVEAU] Préserver les notes de la cérémonie
+                if (c.notes && c.notes.length > 0) {
+                    ceremony.n = c.notes.map(n => n.id || n.pointer).filter(Boolean);
+                }
+                
+                return ceremony;
+            }));
+        }
+        
         if (Object.keys(metadata).length > 0) {
             compressed.m = metadata;
         }

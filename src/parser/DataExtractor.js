@@ -109,7 +109,7 @@ export class DataExtractor {
         const sex = this._extractSex(individualSelection);
         
         // === ÉVÉNEMENTS DE BASE ===
-        const events = this._extractAllEvents(individualSelection);
+        const events = this._extractAllEvents(individualSelection, pointer);
         
         // === RELATIONS DIRECTES VIA READ-GEDCOM APIs ===
         const familyRelations = this._extractDirectFamilyRelations(individualSelection);
@@ -123,6 +123,51 @@ export class DataExtractor {
         // Extraire les références aux notes et médias de l'individu
         const notesData = this._extractIndividualNotes(individualSelection);
         const mediaRefs = this._extractIndividualMediaRefs(individualSelection);
+        
+        // [NOUVEAU] Collecter toutes les notes des événements
+        console.log(`🔍 [DEBUG] Collecte des notes d'événements pour ${pointer}`);
+        const eventNotes = [];
+        let eventNoteCounter = 0;
+        
+        allEvents.forEach((event, eventIndex) => {
+            if (event.notes && event.notes.length > 0) {
+                // Tableau pour stocker les IDs de notes de cet événement
+                const eventNoteIds = [];
+                
+                event.notes.forEach(noteData => {
+                    if (noteData.type === 'embedded' && noteData.text) {
+                        // Créer une note inline pour cet événement
+                        const noteId = `INLINE_EVENT_${pointer}_${eventIndex}_${eventNoteCounter++}`;
+                        const eventInlineNote = {
+                            text: noteData.text,
+                            type: 'event',
+                            eventType: event.type,
+                            id: noteId
+                        };
+                        eventNotes.push(eventInlineNote);
+                        eventNoteIds.push(noteId);  // Ajouter l'ID à la liste
+                        console.log(`🔍 [DEBUG] Note d'événement trouvée: ${event.type} - "${noteData.text.substring(0, 50)}..."`);
+                    } else if (noteData.type === 'reference' && noteData.pointer) {
+                        // Ajouter la référence aux noteRefs si pas déjà présente
+                        if (!notesData.refs.includes(noteData.pointer)) {
+                            notesData.refs.push(noteData.pointer);
+                            console.log(`🔍 [DEBUG] Référence de note d'événement: ${noteData.pointer}`);
+                        }
+                        eventNoteIds.push(noteData.pointer);  // Ajouter la référence à la liste
+                    }
+                });
+                
+                // Ajouter les IDs de notes à l'événement pour la compression
+                if (eventNoteIds.length > 0) {
+                    event.noteIds = eventNoteIds;
+                    console.log(`🔍 [DEBUG] Événement ${event.type} enrichi avec ${eventNoteIds.length} note(s): ${eventNoteIds.join(', ')}`);
+                }
+            }
+        });
+        
+        // Fusionner les notes d'événements avec les notes individuelles
+        const allInlineNotes = [...notesData.inline, ...eventNotes];
+        console.log(`🔍 [DEBUG] TOTAL notes pour ${pointer}: ${notesData.refs.length} refs + ${allInlineNotes.length} inline (${notesData.inline.length} individuelles + ${eventNotes.length} événements)`);
         
         // === FORMAT GENEAFAN OPTIMISÉ ===
         const result = {
@@ -145,7 +190,7 @@ export class DataExtractor {
             
             // Notes (références ET inline)
             noteRefs: notesData.refs,      // Array des pointeurs vers les notes (@N123@)
-            inlineNotes: notesData.inline,  // Array des notes inline complètes
+            inlineNotes: allInlineNotes,   // Array des notes inline complètes (individuelles + événements)
             mediaRefs,  // Array des pointeurs vers les médias (@M123@)
             
             // 🚀 ARCHITECTURE SOLIDE : Attacher l'objet read-gedcom pour APIs natives
@@ -202,7 +247,7 @@ export class DataExtractor {
      * Extrait TOUS les événements (21 types + customs)
      * @private
      */
-    _extractAllEvents(individualSelection) {
+    _extractAllEvents(individualSelection, pointer) {
         const events = [];
         
         // Événements standards avec API dédiée
@@ -237,11 +282,15 @@ export class DataExtractor {
         
         // Événements génériques/customs via getEventOther
         const otherEvents = individualSelection.getEventOther();
-        events.push(...this._extractEventDetails(otherEvents, 'custom'));
+        console.log(`🔍 [DEBUG] getEventOther() pour ${pointer}: ${otherEvents.length} événements customs`);
+        const customEvents = this._extractEventDetails(otherEvents, 'custom');
+        console.log(`🔍 [DEBUG] Événements customs extraits:`, customEvents.map(e => `${e.type}:${e.customType}`));
+        events.push(...customEvents);
         
         // 🚀 NOUVEAUX ATTRIBUTS COMME ÉVÉNEMENTS 
         // Extraire les attributs et les traiter comme des événements
         const attributes = this._extractAllAttributes(individualSelection);
+        console.log(`🔍 [DEBUG] Attributs extraits pour ${pointer}:`, attributes.map(a => `${a.type}:${a.value}`));
         events.push(...attributes);
         
         return events.filter(event => event !== null);
@@ -805,53 +854,35 @@ export class DataExtractor {
     _extractIndividualNotes(individualSelection) {
         const noteRefs = [];
         const inlineNotes = [];
+        const pointer = individualSelection.pointer()[0];
         
         try {
+            console.log(`🔍 [DEBUG] Extraction notes pour ${pointer}`);
+            
             // Notes au niveau individu (NOTE directes)
             const noteSelection = individualSelection.getNote();
+            console.log(`🔍 [DEBUG] getNote() length: ${noteSelection.length}`);
+            
             if (noteSelection.length > 0) {
-                noteSelection.arraySelect().forEach(note => {
+                noteSelection.arraySelect().forEach((note, index) => {
                     const noteValue = note.value()[0];
+                    console.log(`🔍 [DEBUG] Note ${index}: "${noteValue}"`);
                     if (!noteValue) return;
                     
                     if (noteValue.startsWith('@')) {
                         // C'est une référence vers une note externe
                         noteRefs.push(noteValue);
+                        console.log(`🔍 [DEBUG] → Référence note: ${noteValue}`);
                     } else {
                         // C'est une note inline avec son texte complet
                         const fullText = this._extractNoteText(note);
+                        console.log(`🔍 [DEBUG] → Note inline: "${fullText?.substring(0, 50)}..."`);
                         if (fullText) {
                             inlineNotes.push({
                                 text: fullText,
                                 type: 'individual',
                                 // Générer un ID unique pour cette note inline
-                                id: `INLINE_${individualSelection.pointer()[0]}_${inlineNotes.length}`
-                            });
-                        }
-                    }
-                });
-            }
-            
-            // Vérifier aussi avec get('NOTE') pour couvrir tous les cas
-            const embeddedNotes = individualSelection.get('NOTE');
-            if (embeddedNotes && embeddedNotes.length > 0) {
-                embeddedNotes.arraySelect().forEach(note => {
-                    const text = note.value()[0];
-                    if (!text) return;
-                    
-                    if (text.startsWith('@')) {
-                        // C'est une référence - éviter les doublons
-                        if (!noteRefs.includes(text)) {
-                            noteRefs.push(text);
-                        }
-                    } else {
-                        // C'est une note inline
-                        const fullText = this._extractNoteText(note);
-                        if (fullText) {
-                            inlineNotes.push({
-                                text: fullText,
-                                type: 'individual', 
-                                id: `INLINE_${individualSelection.pointer()[0]}_${inlineNotes.length}`
+                                id: `INLINE_${pointer}_${inlineNotes.length}`
                             });
                         }
                     }
@@ -861,11 +892,46 @@ export class DataExtractor {
             this._log(`⚠️ Erreur extraction notes individu: ${error.message}`);
         }
         
+        console.log(`🔍 [DEBUG] RÉSULTAT pour ${pointer}: ${noteRefs.length} refs, ${inlineNotes.length} inline`);
+        
         if (inlineNotes.length > 0) {
-            this._log(`   📝 ${inlineNotes.length} notes inline trouvées pour ${individualSelection.pointer()[0]}`);
+            this._log(`   📝 ${inlineNotes.length} notes inline trouvées pour ${pointer}`);
         }
         
         return { refs: noteRefs, inline: inlineNotes };
+    }
+    
+    /**
+     * [NOUVEAU] Reconstruit le texte complet d'une note GEDCOM inline
+     * Gère correctement les tags GEDCOM :
+     *  - CONC = concaténation (même ligne)
+     *  - CONT = continuation (nouvelle ligne)
+     * @private
+     */
+    _extractNoteText(noteNode) {
+        try {
+            // 1) valeur de la ligne NOTE (ou NOTE record) elle-même
+            const head = (typeof noteNode.value === 'function' && noteNode.value()[0]) || '';
+            const parts = [head];
+
+            // 2) enfants (CONT/CONC) à assembler manuellement
+            const children = (typeof noteNode.get === 'function') ? noteNode.get(null) : null;
+            if (children && children.length > 0 && typeof children.arraySelect === 'function') {
+                children.arraySelect().forEach(child => {
+                    const tag = child.tag && child.tag()[0];
+                    const v = (child.value && child.value()[0]) || '';
+                    if (!tag) return;
+                    if (tag === 'CONT') parts.push('\n' + v);
+                    else if (tag === 'CONC') parts.push(v);
+                });
+            }
+
+            const text = parts.join('');
+            return text && text.trim().length ? text : null;
+        } catch (error) {
+            this._log(`⚠️ Erreur reconstruction NOTE: ${error.message}`);
+            return null;
+        }
     }
     
     /**
@@ -1087,6 +1153,53 @@ export class DataExtractor {
     }
     
     /**
+     * [NOUVEAU] Extrait les notes d'un événement ou attribut
+     * @private
+     */
+    _extractEventNotes(eventSelection) {
+        const notes = [];
+        
+        try {
+            console.log(`🔍 [DEBUG EVENT NOTES] Extraction notes pour événement`);
+            
+            // Méthode 1: Utiliser getNote() si disponible
+            if (typeof eventSelection.getNote === 'function') {
+                const noteSelection = eventSelection.getNote();
+                console.log(`🔍 [DEBUG EVENT NOTES] getNote() length: ${noteSelection.length}`);
+                
+                if (noteSelection.length > 0) {
+                    noteSelection.arraySelect().forEach((note, index) => {
+                        const noteValue = note.value()[0];
+                        console.log(`🔍 [DEBUG EVENT NOTES] Note ${index}: "${noteValue}"`);
+                        
+                        if (noteValue && noteValue.startsWith('@')) {
+                            // Référence vers une note externe
+                            notes.push({ type: 'reference', pointer: noteValue });
+                            console.log(`🔍 [DEBUG EVENT NOTES] → Référence: ${noteValue}`);
+                        } else {
+                            // Note inline - utiliser _extractNoteText pour gérer CONT/CONC
+                            const fullText = this._extractNoteText(note);
+                            console.log(`🔍 [DEBUG EVENT NOTES] → Inline: "${fullText?.substring(0, 50)}..."`);
+                            if (fullText) {
+                                notes.push({ type: 'embedded', text: fullText });
+                            }
+                        }
+                    });
+                }
+            }
+        } catch (error) {
+            this._log(`⚠️ Erreur extraction notes événement: ${error.message}`);
+        }
+        
+        console.log(`🔍 [DEBUG EVENT NOTES] RÉSULTAT: ${notes.length} notes trouvées`);
+        if (notes.length > 0) {
+            console.log(`🔍 [DEBUG EVENT NOTES] Notes:`, notes.map(n => `${n.type}: ${n.text?.substring(0, 30) || n.pointer}...`));
+        }
+        
+        return notes;
+    }
+    
+    /**
      * Extrait les médias d'un événement ou attribut
      * @private
      */
@@ -1147,7 +1260,20 @@ export class DataExtractor {
         
         return multimedia;
     }
-    _extractCustomEventType(eventSelection) { return null; }
+    _extractCustomEventType(eventSelection) { 
+        // Extraire le TYPE d'un événement EVEN custom
+        try {
+            const typeSelection = eventSelection.get('TYPE');
+            if (typeSelection && typeSelection.length > 0) {
+                const typeValue = typeSelection.value()[0];
+                console.log(`🔍 [DEBUG] Custom event TYPE: "${typeValue}"`);
+                return typeValue || null;
+            }
+        } catch (error) {
+            this._log(`⚠️ Erreur extraction TYPE événement custom: ${error.message}`);
+        }
+        return null;
+    }
     /**
      * Extrait les détails d'un attribut (OCCU, RESI, etc.)
      * @private
@@ -1246,6 +1372,127 @@ export class DataExtractor {
     }
     
     /**
+     * Fusionne intelligemment les mariages avec le même conjoint
+     * Règle: fusion sauf si >10 ans d'écart ou divorce entre temps
+     * @private
+     */
+    _fuseMarriagesWithSameSpouse(marriages, individualSelection) {
+        // Trier les mariages par date
+        marriages.sort((a, b) => {
+            const dateA = this._parseGedcomDate(a.date);
+            const dateB = this._parseGedcomDate(b.date);
+            return dateA - dateB;
+        });
+        
+        // Vérifier s'il y a un divorce avec ce conjoint
+        const spouseId = marriages[0].spouseId;
+        const hasDivorce = this._hasDivorceWithSpouse(individualSelection, spouseId);
+        
+        // Calculer l'écart entre le premier et dernier mariage
+        const firstDate = this._parseGedcomDate(marriages[0].date);
+        const lastDate = this._parseGedcomDate(marriages[marriages.length - 1].date);
+        const yearsDiff = (lastDate - firstDate) / (365 * 24 * 60 * 60 * 1000);
+        
+        // Si plus de 10 ans d'écart OU divorce, garder séparés
+        if (yearsDiff > 10 || hasDivorce) {
+            console.log(`🔍 [DEBUG] Mariages avec ${spouseId} gardés séparés: ${yearsDiff.toFixed(1)} ans d'écart, divorce: ${hasDivorce}`);
+            return marriages;
+        }
+        
+        // Sinon, fusionner en un seul mariage avec cérémonies multiples
+        console.log(`🔍 [DEBUG] Fusion de ${marriages.length} mariages avec ${spouseId}`);
+        const fusedMarriage = {
+            type: 'marriage',
+            date: marriages[0].date,  // Date de la première cérémonie
+            place: marriages[0].fullPlace || marriages[0].place,
+            spouseId: spouseId,
+            ceremonies: marriages.map((m, index) => ({
+                // [NOUVEAU] Utiliser le ceremonyType extrait ou marriageType
+                type: m.ceremonyType || 
+                      (m.marriageType ? 
+                       (m.marriageType.toLowerCase().includes('religious') ? 'religious' : 'civil') :
+                       (index === 0 ? 'civil' : 'religious')), // Fallback: assume civil first
+                date: m.date,
+                place: m.fullPlace || m.place, // Préserver le lieu complet
+                // [NOUVEAU] Préserver le TYPE original
+                marriageType: m.marriageType || null,
+                // [NOUVEAU] Préserver notes et sources si disponibles
+                notes: m.notes || null,
+                sources: m.sources || null
+            }))
+        };
+        
+        // [NOUVEAU] Conserver les notes et sources du premier mariage au niveau principal
+        if (marriages[0].notes) {
+            fusedMarriage.notes = marriages[0].notes;
+            fusedMarriage.noteIds = marriages[0].noteIds;
+        }
+        if (marriages[0].sources) {
+            fusedMarriage.sources = marriages[0].sources;
+        }
+        
+        return [fusedMarriage];
+    }
+    
+    /**
+     * Parse une date GEDCOM en Date JavaScript
+     * @private
+     */
+    _parseGedcomDate(dateStr) {
+        if (!dateStr) return new Date(0);
+        
+        // Format: "2 NOV 1956" ou "1956" ou "NOV 1956"
+        const months = {
+            'JAN': 0, 'FEB': 1, 'MAR': 2, 'APR': 3, 'MAY': 4, 'JUN': 5,
+            'JUL': 6, 'AUG': 7, 'SEP': 8, 'OCT': 9, 'NOV': 10, 'DEC': 11
+        };
+        
+        const parts = dateStr.split(' ');
+        let year = 1900, month = 0, day = 1;
+        
+        if (parts.length === 3) {
+            // "2 NOV 1956"
+            day = parseInt(parts[0]) || 1;
+            month = months[parts[1]] || 0;
+            year = parseInt(parts[2]) || 1900;
+        } else if (parts.length === 2) {
+            // "NOV 1956"
+            month = months[parts[0]] || 0;
+            year = parseInt(parts[1]) || 1900;
+        } else if (parts.length === 1) {
+            // "1956"
+            year = parseInt(parts[0]) || 1900;
+        }
+        
+        return new Date(year, month, day);
+    }
+    
+    /**
+     * Vérifie s'il y a un divorce avec un conjoint spécifique
+     * @private
+     */
+    _hasDivorceWithSpouse(individualSelection, spouseId) {
+        // Parcourir les familles pour chercher un divorce
+        const families = individualSelection.getFamilyAsSpouse().arraySelect();
+        for (const family of families) {
+            // Vérifier si cette famille a le bon conjoint
+            const husb = family.getHusband().pointer()[0];
+            const wife = family.getWife().pointer()[0];
+            const individualPointer = individualSelection.pointer()[0];
+            const otherSpouse = (husb === individualPointer) ? wife : husb;
+            
+            if (otherSpouse === spouseId) {
+                // Vérifier s'il y a un divorce dans cette famille
+                const divorceEvents = family.getEventDivorce().arraySelect();
+                if (divorceEvents.length > 0) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+    
+    /**
      * Extraction optimisée des événements familiaux avec métadonnées
      * @private  
      */
@@ -1254,22 +1501,95 @@ export class DataExtractor {
         
         // === ÉVÉNEMENTS DE MARIAGE ===
         const familiesAsSpouse = individualSelection.getFamilyAsSpouse().arraySelect();
+        const marriagesBySpouse = new Map(); // Pour grouper les mariages par conjoint
+        
         familiesAsSpouse.forEach((spouseFamily, index) => {
             const marriageEvents = spouseFamily.getEventMarriage().arraySelect();
+            const spouseId = familyRelations.spouseIds[index] || null;
+            
             marriageEvents.forEach(marriageEvent => {
                 const marriageDate = marriageEvent.getDate();
                 const marriagePlace = marriageEvent.getPlace();
                 
                 if (marriageDate.length > 0) {
-                    const spouseId = familyRelations.spouseIds[index] || null;
-                    events.push({
+                    const marriage = {
                         type: 'marriage',
                         date: marriageDate.value()[0],
                         place: marriagePlace.length > 0 ? marriagePlace.value()[0] : null,
                         spouseId: spouseId
-                    });
+                    };
+                    
+                    // [NOUVEAU] Extraire le TYPE du mariage via l'API read-gedcom
+                    try {
+                        const marriageType = marriageEvent.getType();
+                        if (marriageType && marriageType.length > 0) {
+                            const typeValue = marriageType.value()[0];
+                            if (typeValue) {
+                                marriage.marriageType = typeValue;
+                                // Utiliser le TYPE pour déterminer civil/religieux
+                                if (typeValue.toLowerCase().includes('religious')) {
+                                    marriage.ceremonyType = 'religious';
+                                } else if (typeValue.toLowerCase().includes('civil')) {
+                                    marriage.ceremonyType = 'civil';
+                                }
+                            }
+                        }
+                    } catch (error) {
+                        // getType() peut ne pas exister sur certains événements
+                        // this._log(`⚠️ Pas de TYPE pour ce mariage: ${error.message}`);
+                    }
+                    
+                    // [NOUVEAU] Préserver le lieu complet sans normalisation prématurée
+                    if (marriagePlace.length > 0) {
+                        const fullPlace = marriagePlace.value()[0];
+                        marriage.fullPlace = fullPlace; // Lieu complet pour préservation
+                        marriage.place = fullPlace; // Pour compatibilité existing
+                    }
+                    
+                    // [NOUVEAU] Extraire les notes du mariage
+                    try {
+                        const marriageNotes = marriageEvent.getNote();
+                        if (marriageNotes && marriageNotes.length > 0) {
+                            marriage.notes = this._extractEventNotes(marriageEvent);
+                            if (marriage.notes.length > 0) {
+                                marriage.noteIds = marriage.notes.map(n => n.id || n.pointer).filter(Boolean);
+                            }
+                        }
+                    } catch (error) {
+                        // getNote() peut échouer sur certains événements
+                    }
+                    
+                    // [NOUVEAU] Extraire les sources
+                    try {
+                        const marriageSources = marriageEvent.get('SOUR');
+                        if (marriageSources && marriageSources.length > 0) {
+                            marriage.sources = marriageSources.arraySelect().map(source => ({
+                                pointer: source.pointer() ? source.pointer()[0] : null
+                            })).filter(s => s.pointer);
+                        }
+                    } catch (error) {
+                        // Sources optionnelles
+                    }
+                    
+                    // Grouper les mariages par conjoint
+                    if (!marriagesBySpouse.has(spouseId)) {
+                        marriagesBySpouse.set(spouseId, []);
+                    }
+                    marriagesBySpouse.get(spouseId).push(marriage);
                 }
             });
+        });
+        
+        // Traiter les mariages groupés par conjoint
+        marriagesBySpouse.forEach((marriages, spouseId) => {
+            if (marriages.length === 1) {
+                // Un seul mariage avec ce conjoint
+                events.push(marriages[0]);
+            } else {
+                // Plusieurs mariages avec le même conjoint - appliquer la règle de fusion
+                const fusedMarriages = this._fuseMarriagesWithSameSpouse(marriages, individualSelection);
+                events.push(...fusedMarriages);
+            }
         });
         
         // === ÉVÉNEMENTS NAISSANCE D'ENFANTS ===
