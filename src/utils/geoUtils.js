@@ -18,6 +18,9 @@ let geoDataLoadPromise = null;
 // Module name pour le logger
 const MODULE = 'geoUtils';
 
+// Cache pour le format PLAC du fichier GEDCOM
+let placFormatCache = null;
+
 /**
  * Charge les données géographiques depuis l'API Cloudflare KV
  * @returns {Promise<{countries: Object, departments: Object}>}
@@ -160,6 +163,74 @@ export function normalizeGeoString(inputString) {
         .normalize('NFD')
         .replace(/[\u0300-\u036f]/g, '') // Supprimer les accents
         .replace(/\s/g, "_"); // Espaces → underscores
+}
+
+/**
+ * 🆕 NOUVEAU: Configure le format PLAC depuis l'en-tête GEDCOM
+ * @param {string} placForm - Format PLAC (ex: "Town, Area code, County, Region, Country, Subdivision")
+ */
+export function setPlacFormat(placForm) {
+    if (typeof placForm === 'string' && placForm.trim()) {
+        placFormatCache = placForm.split(',').map(part => part.trim());
+        logger.debug(MODULE, `Format PLAC configuré: ${placFormatCache.length} champs`);
+    }
+}
+
+/**
+ * 🆕 NOUVEAU: Parse un lieu avec extraction de subdivision selon le format PLAC
+ * @param {string} placeString - Lieu brut depuis le GEDCOM
+ * @returns {Object} - { normalizedPlace, subdivision, fullPlace }
+ * 
+ * @example
+ * parsePlaceWithSubdivision("Paris,75000,Paris,Île-de-France,FRANCE,Synagogue de la rue Copernic")
+ * // → { normalizedPlace: "paris", subdivision: "Synagogue de la rue Copernic", fullPlace: "Paris,75000,..." }
+ * 
+ * parsePlaceWithSubdivision("Paris,75000,Paris,Île-de-France,FRANCE,Ecole Polytechnique : promo 1952")
+ * // → { normalizedPlace: "paris", subdivision: "Ecole Polytechnique : promo 1952", fullPlace: "Paris,75000,..." }
+ */
+export function parsePlaceWithSubdivision(placeString) {
+    if (!placeString || typeof placeString !== 'string') {
+        return { normalizedPlace: null, subdivision: null, fullPlace: placeString };
+    }
+
+    // Normalisation standard du lieu
+    const normalizedPlace = normalizePlace(placeString);
+    
+    // Si pas de format PLAC configuré, retourner sans subdivision
+    if (!placFormatCache || placFormatCache.length === 0) {
+        return { normalizedPlace, subdivision: null, fullPlace: placeString };
+    }
+    
+    try {
+        // Parser selon le format PLAC
+        const parts = placeString.split(',').map(part => part.trim());
+        
+        // Le dernier champ correspond à "Subdivision" selon le format standard GEDCOM
+        const subdivisionIndex = Math.min(parts.length - 1, placFormatCache.length - 1);
+        
+        // Extraire la subdivision si elle existe et n'est pas vide
+        let subdivision = null;
+        if (subdivisionIndex >= 0 && parts[subdivisionIndex] && parts[subdivisionIndex] !== '') {
+            // Vérifier que c'est bien le champ "Subdivision" dans le format
+            const fieldName = placFormatCache[subdivisionIndex]?.toLowerCase();
+            if (fieldName && fieldName.includes('subdivision')) {
+                subdivision = parts[subdivisionIndex];
+            } else if (subdivisionIndex === parts.length - 1 && parts[subdivisionIndex]) {
+                // Fallback: si dernier champ non-vide, considérer comme subdivision
+                subdivision = parts[subdivisionIndex];
+            }
+        }
+        
+        return {
+            normalizedPlace,
+            subdivision: subdivision || null,
+            fullPlace: placeString
+        };
+        
+    } catch (error) {
+        logger.debug(MODULE, `Erreur parsing subdivision pour "${placeString}": ${error.message}`);
+        return { normalizedPlace, subdivision: null, fullPlace: placeString };
+    }
 }
 
 /**

@@ -266,9 +266,14 @@ export class CacheBuilder {
         
         // Lieu - IMPORTANT : Ne stocker QUE la clé normalisée, PAS les coordonnées
         if (event.place) {
-            // Si place est un objet temporaire avec coordonnées
+            // Si place est un objet temporaire avec coordonnées ET subdivision
             if (typeof event.place === 'object' && event.place.value) {
                 compressed.l = await this._normalizePlace(event.place.value);
+                // [NOUVEAU] Extraire la subdivision si présente
+                if (event.place.subdivision) {
+                    // Stocker dans les métadonnées (sera ajouté plus bas)
+                    if (!event.subdivision) event.subdivision = event.place.subdivision;
+                }
                 // ⚠️ NE PAS stocker _tempLatitude/_tempLongitude ici !
                 // Les coordonnées seront dans familyTownsStore uniquement
             } 
@@ -298,6 +303,11 @@ export class CacheBuilder {
             metadata.n = event.noteIds;
         }
         
+        // [NOUVEAU] Ajouter la subdivision si présente (Synagogue, École, etc.)
+        if (event.subdivision) {
+            metadata.sd = event.subdivision; // sd = subdivision
+        }
+        
         // [NOUVEAU] Ajouter les cérémonies multiples pour les mariages fusionnés
         if (event.ceremonies && event.ceremonies.length > 0) {
             metadata.ceremonies = await Promise.all(event.ceremonies.map(async c => {
@@ -307,14 +317,16 @@ export class CacheBuilder {
                     l: c.place ? await this._normalizePlace(c.place) : undefined
                 };
                 
-                // [NOUVEAU] Préserver le TYPE original (Religious marriage, etc.)
-                if (c.marriageType) {
-                    ceremony.mt = c.marriageType; // mt = marriageType
-                }
+                // [SUPPRIMÉ] marriageType redondant avec t: "r"/"c"
                 
                 // [NOUVEAU] Préserver les notes de la cérémonie
                 if (c.notes && c.notes.length > 0) {
                     ceremony.n = c.notes.map(n => n.id || n.pointer).filter(Boolean);
+                }
+                
+                // [NOUVEAU] Préserver la subdivision de la cérémonie (Synagogue, Église, etc.)
+                if (c.subdivision) {
+                    ceremony.sd = c.subdivision; // sd = subdivision
                 }
                 
                 return ceremony;

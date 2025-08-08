@@ -3,7 +3,7 @@
  * Produit des données enrichies prêtes pour la compression GeneaFan
  */
 
-import { extractGeolocation } from '../utils/geoUtils.js';
+import { extractGeolocation, setPlacFormat, parsePlaceWithSubdivision } from '../utils/geoUtils.js';
 
 export class DataExtractor {
     constructor(options = {}) {
@@ -58,6 +58,10 @@ export class DataExtractor {
             result.notes = this._extractNotes(rootSelection);
             this._log(`✅ Notes extraites: ${result.notes.length}`);
         }
+        
+        // [NOUVEAU] Extraire et configurer le format PLAC pour les subdivisions
+        this._log('Configuration du format PLAC...');
+        this._configurePlacFormat(rootSelection);
         
         this._log('Extraction des métadonnées...');
         result.metadata = this._extractMetadata(rootSelection);
@@ -986,11 +990,16 @@ export class DataExtractor {
         const placeValue = placeSelection.value()[0] || null;
         if (!placeValue) return null;
         
-        // Structure temporaire pour transporter les coordonnées
+        // [NOUVEAU] Parser le lieu avec subdivision
+        const placeData = parsePlaceWithSubdivision(placeValue);
+        
+        // Structure temporaire pour transporter coordonnées ET subdivision
         // Note: Cet objet sera utilisé uniquement pendant l'extraction
         // Les coordonnées ne seront PAS stockées dans le cache individuel final
-        const placeData = {
-            value: placeValue,
+        const enrichedPlaceData = {
+            value: placeData.normalizedPlace || placeValue, // Lieu normalisé
+            fullPlace: placeData.fullPlace, // Lieu complet original
+            subdivision: placeData.subdivision || null, // Subdivision (Synagogue, École, etc.)
             // Propriétés temporaires pour transport vers familyTownsStore
             _tempLatitude: null,
             _tempLongitude: null
@@ -1047,8 +1056,8 @@ export class DataExtractor {
                                     const lon = parseFloat(lonValue);
                                     
                                     if (!isNaN(lat) && !isNaN(lon)) {
-                                        placeData._tempLatitude = lat;
-                                        placeData._tempLongitude = lon;
+                                        enrichedPlaceData._tempLatitude = lat;
+                                        enrichedPlaceData._tempLongitude = lon;
                                         // Log removed: coordinate extraction working perfectly
                                     }
                                 }
@@ -1062,9 +1071,9 @@ export class DataExtractor {
             this._log(`   ⚠️ Impossible d'extraire coordonnées pour "${placeValue}": ${error.message}`);
         }
         
-        // IMPORTANT : Retourner l'objet complet TEMPORAIREMENT
-        // CacheBuilder devra extraire les coordonnées et ne stocker que la valeur
-        return placeData;
+        // IMPORTANT : Retourner l'objet complet TEMPORAIREMENT avec subdivision
+        // CacheBuilder devra extraire les coordonnées et ne stocker que la valeur + subdivision
+        return enrichedPlaceData;
     }
     _extractAge(ageSelection) { return null; }
     _extractCause(eventSelection) { return null; }
@@ -1414,8 +1423,8 @@ export class DataExtractor {
                        (index === 0 ? 'civil' : 'religious')), // Fallback: assume civil first
                 date: m.date,
                 place: m.fullPlace || m.place, // Préserver le lieu complet
-                // [NOUVEAU] Préserver le TYPE original
-                marriageType: m.marriageType || null,
+                // [NOUVEAU] Préserver la subdivision (Synagogue, Ecole, etc.)
+                subdivision: m.subdivision || null,
                 // [NOUVEAU] Préserver notes et sources si disponibles
                 notes: m.notes || null,
                 sources: m.sources || null
@@ -1519,6 +1528,18 @@ export class DataExtractor {
                         spouseId: spouseId
                     };
                     
+                    // [NOUVEAU] Parser le lieu avec subdivision si disponible
+                    if (marriagePlace.length > 0) {
+                        const placeString = marriagePlace.value()[0];
+                        const placeData = parsePlaceWithSubdivision(placeString);
+                        
+                        marriage.place = placeData.normalizedPlace || placeString;
+                        marriage.fullPlace = placeData.fullPlace;
+                        if (placeData.subdivision) {
+                            marriage.subdivision = placeData.subdivision;
+                        }
+                    }
+                    
                     // [NOUVEAU] Extraire le TYPE du mariage via l'API read-gedcom
                     try {
                         const marriageType = marriageEvent.getType();
@@ -1607,4 +1628,35 @@ export class DataExtractor {
     }
     
     _extractAdoptionDetails(familySelection) { return null; }
+    
+    /**
+     * 🆕 NOUVEAU: Configure le format PLAC pour l'extraction des subdivisions
+     * @private
+     */
+    _configurePlacFormat(rootSelection) {
+        try {
+            // Chercher l'en-tête PLAC au niveau root
+            const placSelection = rootSelection.get('PLAC');
+            if (placSelection && placSelection.length > 0) {
+                const formSelection = placSelection.get('FORM');
+                if (formSelection && formSelection.length > 0) {
+                    const placForm = formSelection.value()[0];
+                    if (placForm) {
+                        this._log(`Format PLAC détecté: "${placForm}"`);
+                        setPlacFormat(placForm);
+                        return;
+                    }
+                }
+            }
+            
+            // Fallback: format standard GEDCOM si pas trouvé
+            this._log('Format PLAC standard utilisé (pas d\'en-tête PLAC trouvé)');
+            setPlacFormat('Town, Area code, County, Region, Country, Subdivision');
+            
+        } catch (error) {
+            this._log(`⚠️ Erreur configuration PLAC: ${error.message}`);
+            // Utiliser format standard par défaut
+            setPlacFormat('Town, Area code, County, Region, Country, Subdivision');
+        }
+    }
 }
