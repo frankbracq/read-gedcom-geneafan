@@ -3,7 +3,14 @@
  * Produit des données enrichies prêtes pour la compression GeneaFan
  */
 
-import { extractGeolocation, setPlacFormat, parsePlaceWithSubdivision } from '../utils/geoUtils.js';
+/**
+ * [MOD 2025-08-08] Améliorations:
+ *  - Mariages (FAM/MARR) conservés + extraction via _extractFamilies() désormais appelée dans extract()
+ *  - NOTES: reconstruction explicite CONC/CONT via _extractNoteText(); _extractEventNotes() gère refs + inline
+ *  - PLAC FORM: lecture HEAD>PLAC>FORM + mapping structuré via _applyPlacForm(), exposé dans metadata.placForm
+ */
+
+import { extractGeolocation } from '../utils/geoUtils.js';
 
 export class DataExtractor {
     constructor(options = {}) {
@@ -33,9 +40,25 @@ export class DataExtractor {
             submitters: [],
             metadata: {}
         };
+        // [MOD 2025-08-08] Lecture du format PLAC défini dans le header (HEAD > PLAC > FORM)
+        try {
+            this._placForm = this._readPlacFormFromHead(rootSelection);
+            if (this._placForm) {
+                result.metadata.placForm = this._placForm;
+                this._log(`ℹ️ PLAC FORM: ${this._placForm}`);
+            }
+        } catch (e) {
+            this._log(`⚠️ Erreur lecture PLAC FORM: ${e.message}`);
+        }
+
         
         this._log('Extraction optimisée des individus avec relations directes...');
         result.individuals = await this._extractIndividualsOptimized(rootSelection);
+        
+        // Extraction des familles (époux/épouse, enfants, événements familiaux dont MARR)
+        this._log('Extraction des familles...');
+        result.families = await this._extractFamilies(rootSelection);
+        this._log(`✅ Familles extraites: ${result.families.length}`);
         
         if (this.options.extractSources) {
             this._log('Extraction des sources...');
@@ -58,10 +81,6 @@ export class DataExtractor {
             result.notes = this._extractNotes(rootSelection);
             this._log(`✅ Notes extraites: ${result.notes.length}`);
         }
-        
-        // [NOUVEAU] Extraire et configurer le format PLAC pour les subdivisions
-        this._log('Configuration du format PLAC...');
-        this._configurePlacFormat(rootSelection);
         
         this._log('Extraction des métadonnées...');
         result.metadata = this._extractMetadata(rootSelection);
@@ -86,7 +105,8 @@ export class DataExtractor {
         const individuals = [];
         const individualRecords = rootSelection.getIndividualRecord().arraySelect();
         
-        this._log(`Processing ${individualRecords.length} individuals with direct family APIs...`);
+        // Log de synthèse uniquement
+        this._log(`Extraction de ${individualRecords.length} enregistrements INDI...`);
         
         for (let i = 0; i < individualRecords.length; i++) {
             const individual = individualRecords[i];
@@ -113,7 +133,7 @@ export class DataExtractor {
         const sex = this._extractSex(individualSelection);
         
         // === ÉVÉNEMENTS DE BASE ===
-        const events = this._extractAllEvents(individualSelection, pointer);
+        const events = this._extractAllEvents(individualSelection);
         
         // === RELATIONS DIRECTES VIA READ-GEDCOM APIs ===
         const familyRelations = this._extractDirectFamilyRelations(individualSelection);
@@ -127,51 +147,6 @@ export class DataExtractor {
         // Extraire les références aux notes et médias de l'individu
         const notesData = this._extractIndividualNotes(individualSelection);
         const mediaRefs = this._extractIndividualMediaRefs(individualSelection);
-        
-        // [NOUVEAU] Collecter toutes les notes des événements
-        console.log(`🔍 [DEBUG] Collecte des notes d'événements pour ${pointer}`);
-        const eventNotes = [];
-        let eventNoteCounter = 0;
-        
-        allEvents.forEach((event, eventIndex) => {
-            if (event.notes && event.notes.length > 0) {
-                // Tableau pour stocker les IDs de notes de cet événement
-                const eventNoteIds = [];
-                
-                event.notes.forEach(noteData => {
-                    if (noteData.type === 'embedded' && noteData.text) {
-                        // Créer une note inline pour cet événement
-                        const noteId = `INLINE_EVENT_${pointer}_${eventIndex}_${eventNoteCounter++}`;
-                        const eventInlineNote = {
-                            text: noteData.text,
-                            type: 'event',
-                            eventType: event.type,
-                            id: noteId
-                        };
-                        eventNotes.push(eventInlineNote);
-                        eventNoteIds.push(noteId);  // Ajouter l'ID à la liste
-                        console.log(`🔍 [DEBUG] Note d'événement trouvée: ${event.type} - "${noteData.text.substring(0, 50)}..."`);
-                    } else if (noteData.type === 'reference' && noteData.pointer) {
-                        // Ajouter la référence aux noteRefs si pas déjà présente
-                        if (!notesData.refs.includes(noteData.pointer)) {
-                            notesData.refs.push(noteData.pointer);
-                            console.log(`🔍 [DEBUG] Référence de note d'événement: ${noteData.pointer}`);
-                        }
-                        eventNoteIds.push(noteData.pointer);  // Ajouter la référence à la liste
-                    }
-                });
-                
-                // Ajouter les IDs de notes à l'événement pour la compression
-                if (eventNoteIds.length > 0) {
-                    event.noteIds = eventNoteIds;
-                    console.log(`🔍 [DEBUG] Événement ${event.type} enrichi avec ${eventNoteIds.length} note(s): ${eventNoteIds.join(', ')}`);
-                }
-            }
-        });
-        
-        // Fusionner les notes d'événements avec les notes individuelles
-        const allInlineNotes = [...notesData.inline, ...eventNotes];
-        console.log(`🔍 [DEBUG] TOTAL notes pour ${pointer}: ${notesData.refs.length} refs + ${allInlineNotes.length} inline (${notesData.inline.length} individuelles + ${eventNotes.length} événements)`);
         
         // === FORMAT GENEAFAN OPTIMISÉ ===
         const result = {
@@ -189,13 +164,13 @@ export class DataExtractor {
             spouseIds: familyRelations.spouseIds,
             childrenIds: familyRelations.childrenIds,
             
-            // Événements complets
+            // Événements (perso + familiaux)
             events: allEvents,
             
-            // Notes (références ET inline)
-            noteRefs: notesData.refs,      // Array des pointeurs vers les notes (@N123@)
-            inlineNotes: allInlineNotes,   // Array des notes inline complètes (individuelles + événements)
-            mediaRefs,  // Array des pointeurs vers les médias (@M123@)
+            // Notes et médias
+            noteRefs: notesData.refs,
+            inlineNotes: notesData.inline,
+            mediaRefs,
             
             // 🚀 ARCHITECTURE SOLIDE : Attacher l'objet read-gedcom pour APIs natives
             readGedcomIndividual: individualSelection,
@@ -211,183 +186,280 @@ export class DataExtractor {
     }
     
     /**
-     * Extrait le nom complet (via API native)
+     * Extrait le nom complet (via API natives read-gedcom)
      * @private
      */
     _extractName(individualSelection) {
         const nameSelection = individualSelection.getName();
-        if (nameSelection.length === 0) return { given: '', surname: '' };
+        if (!nameSelection || nameSelection.length === 0) {
+            return { given: '', surname: '', prefix: '', suffix: '', full: '' };
+        }
         
-        const nameParts = nameSelection.valueAsParts();
-        if (nameParts.length === 0) return { given: '', surname: '' };
+        const givenSelection = nameSelection.getGivenName();
+        const surnameSelection = nameSelection.getSurname();
+        const prefixSelection = nameSelection.getNamePrefix();
+        const suffixSelection = nameSelection.getNameSuffix();
         
-        const [given, surname, suffix] = nameParts[0] || ['', '', ''];
+        const given = givenSelection && givenSelection.length > 0 ? (givenSelection.value()[0] || '') : '';
+        const surname = surnameSelection && surnameSelection.length > 0 ? (surnameSelection.value()[0] || '') : '';
+        const prefix = prefixSelection && prefixSelection.length > 0 ? (prefixSelection.value()[0] || '') : '';
+        const suffix = suffixSelection && suffixSelection.length > 0 ? (suffixSelection.value()[0] || '') : '';
         
         return {
-            given: given || '',
-            surname: surname || '',
+            given,
+            surname,
+            prefix: prefix || '',
             suffix: suffix || '',
             full: nameSelection.value()[0] || '',
-            
-            // Variations si disponibles
             phonetic: this._extractPhoneticName(nameSelection),
             romanized: this._extractRomanizedName(nameSelection)
         };
     }
     
     /**
-     * Extrait le sexe (via API native)
+     * Extrait le genre
      * @private
      */
     _extractSex(individualSelection) {
         const sexSelection = individualSelection.getSex();
-        if (sexSelection.length === 0) return 'U';
-        
-        const sexValue = sexSelection.value()[0];
-        return sexValue || 'U';
+        if (!sexSelection || sexSelection.length === 0) return null;
+        const v = sexSelection.value();
+        return v && v.length > 0 ? v[0] : null;
     }
     
     /**
-     * Extrait TOUS les événements (21 types + customs)
+     * Événements + Attributs
      * @private
      */
-    _extractAllEvents(individualSelection, pointer) {
+    _extractAllEvents(individualSelection) {
         const events = [];
         
-        // Événements standards avec API dédiée
+        // Événements standards (perso)
         const standardEvents = [
             { method: 'getEventBirth', type: 'birth' },
-            { method: 'getEventChristening', type: 'christening' },
             { method: 'getEventDeath', type: 'death' },
+            { method: 'getEventMarriage', type: 'marriage' },
+            { method: 'getEventDivorce', type: 'divorce' },
+            { method: 'getEventBaptism', type: 'baptism' },
             { method: 'getEventBurial', type: 'burial' },
             { method: 'getEventCremation', type: 'cremation' },
             { method: 'getEventAdoption', type: 'adoption' },
-            { method: 'getEventBaptism', type: 'baptism' },
-            { method: 'getEventBarMitzvah', type: 'bar-mitzvah' },
-            { method: 'getEventBatMitzvah', type: 'bat-mitzvah' },
-            { method: 'getEventAdultChristening', type: 'adult-christening' },
-            { method: 'getEventConfirmation', type: 'confirmation' },
-            { method: 'getEventFirstCommunion', type: 'first-communion' },
-            { method: 'getEventNaturalization', type: 'naturalization' },
+            { method: 'getEventEngagement', type: 'engagement' },
+            { method: 'getEventGraduation', type: 'graduation' },
             { method: 'getEventEmigration', type: 'emigration' },
             { method: 'getEventImmigration', type: 'immigration' },
-            { method: 'getEventCensus', type: 'census' },
-            { method: 'getEventProbate', type: 'probate' },
-            { method: 'getEventWill', type: 'will' },
-            { method: 'getEventGraduation', type: 'graduation' },
-            { method: 'getEventRetirement', type: 'retirement' }
+            { method: 'getEventNaturalization', type: 'naturalization' }
         ];
         
-        // Extraire événements standards
         standardEvents.forEach(({ method, type }) => {
-            const eventSelection = individualSelection[method]();
-            events.push(...this._extractEventDetails(eventSelection, type));
+            const selection = typeof individualSelection[method] === 'function'
+                ? individualSelection[method]()
+                : { arraySelect: () => [] };
+            events.push(...this._extractEventDetails(selection, type));
         });
         
-        // Événements génériques/customs via getEventOther
-        const otherEvents = individualSelection.getEventOther();
-        console.log(`🔍 [DEBUG] getEventOther() pour ${pointer}: ${otherEvents.length} événements customs`);
-        const customEvents = this._extractEventDetails(otherEvents, 'custom');
-        console.log(`🔍 [DEBUG] Événements customs extraits:`, customEvents.map(e => `${e.type}:${e.customType}`));
-        events.push(...customEvents);
+        // Événements "other" (custom)
+        if (typeof individualSelection.getEventOther === 'function') {
+            const otherEvents = individualSelection.getEventOther();
+            events.push(...this._extractEventDetails(otherEvents, 'custom'));
+        }
         
-        // 🚀 NOUVEAUX ATTRIBUTS COMME ÉVÉNEMENTS 
-        // Extraire les attributs et les traiter comme des événements
+        // Attributs traités comme événements
         const attributes = this._extractAllAttributes(individualSelection);
-        console.log(`🔍 [DEBUG] Attributs extraits pour ${pointer}:`, attributes.map(a => `${a.type}:${a.value}`));
         events.push(...attributes);
         
-        return events.filter(event => event !== null);
+        return events.filter(Boolean);
     }
     
     /**
-     * Extrait les détails d'un événement
+     * Détails d'événements
      * @private
      */
     _extractEventDetails(eventSelection, baseType) {
-        const events = [];
-        const eventArray = eventSelection.arraySelect();
+        const out = [];
+        const arr = eventSelection.arraySelect ? eventSelection.arraySelect() : [];
         
-        for (let i = 0; i < eventArray.length; i++) {
-            const event = eventArray[i];
+        for (let i = 0; i < arr.length; i++) {
+            const ev = arr[i];
             const eventData = {
                 type: baseType,
-                date: this._extractDate(event.getDate()),
-                place: this._extractPlace(event.getPlace()),
-                age: typeof event.getAge === 'function' ? this._extractAge(event.getAge()) : null,
-                cause: this._extractCause(event),
-                notes: this.options.extractNotes ? this._extractEventNotes(event) : [],
-                sources: this.options.extractSources ? this._extractEventSources(event) : [],
-                multimedia: this.options.extractMedia ? this._extractEventMultimedia(event) : []
+                date: this._extractDate(ev.getDate()),
+                place: this._extractPlace(ev.getPlace()),
+                age: typeof ev.getAge === 'function' ? this._extractAge(ev.getAge()) : null,
+                cause: this._extractCause(ev),
+                notes: this.options.extractNotes ? this._extractEventNotes(ev) : [],
+                sources: this.options.extractSources ? this._extractEventSources(ev) : [],
+                multimedia: this.options.extractMedia ? this._extractEventMultimedia(ev) || [] : []
             };
-            
-            // Données spécifiques selon le type
             if (baseType === 'custom') {
-                eventData.customType = this._extractCustomEventType(event);
+                eventData.customType = this._extractCustomEventType(ev) || null;
             }
-            
-            events.push(eventData);
+            out.push(eventData);
         }
-        
-        return events;
+        return out;
     }
     
     /**
-     * Extrait TOUS les attributs (13 types + customs)
+     * Attributs -> événements
      * @private
      */
     _extractAllAttributes(individualSelection) {
         const attributes = [];
-        
         const standardAttributes = [
             { method: 'getAttributeCaste', type: 'caste' },
-            { method: 'getAttributePhysicalDescription', type: 'physical-description' },
-            { method: 'getAttributeScholasticAchievement', type: 'education' },
-            { method: 'getAttributeIdentificationNumber', type: 'id-number' },
+            { method: 'getAttributePhysicalDescription', type: 'physical' },
+            { method: 'getAttributeEducation', type: 'education' },
+            { method: 'getAttributeNationalId', type: 'national_id' },
             { method: 'getAttributeNationality', type: 'nationality' },
-            { method: 'getAttributeChildrenCount', type: 'children-count' },
-            { method: 'getAttributeRelationshipCount', type: 'marriage-count' },
             { method: 'getAttributeOccupation', type: 'occupation' },
-            { method: 'getAttributePossessions', type: 'property' },
-            { method: 'getAttributeReligiousAffiliation', type: 'religion' },
+            { method: 'getAttributeProperty', type: 'property' },
+            { method: 'getAttributeReligion', type: 'religion' },
             { method: 'getAttributeResidence', type: 'residence' },
-            { method: 'getAttributeNobilityTitle', type: 'title' }
+            { method: 'getAttributeRetirement', type: 'retirement' },
+            { method: 'getAttributeSocialSecurityNumber', type: 'ssn' },
+            { method: 'getAttributeTitle', type: 'title' },
+            { method: 'getAttributeNobilityType', type: 'nobility' }
         ];
         
         standardAttributes.forEach(({ method, type }) => {
-            const attrSelection = individualSelection[method]();
-            attributes.push(...this._extractAttributeDetails(attrSelection, type));
+            const sel = typeof individualSelection[method] === 'function'
+                ? individualSelection[method]()
+                : { arraySelect: () => [] };
+            attributes.push(...this._extractAttributeDetails(sel, type));
         });
         
-        // Attributs génériques via getFact
-        const factAttributes = individualSelection.getAttributeFact();
-        attributes.push(...this._extractAttributeDetails(factAttributes, 'fact'));
-        
-        return attributes.filter(attr => attr !== null);
-    }
-    
-    /**
-     * Extrait les relations familiales comme enfant
-     * @private
-     */
-    _extractFamilyAsChild(individualSelection) {
-        const families = [];
-        const familyArray = individualSelection.getFamilyAsChild().arraySelect();
-        
-        for (let i = 0; i < familyArray.length; i++) {
-            const family = familyArray[i];
-            families.push({
-                pointer: family.pointer()[0],
-                pedigree: this._extractPedigree(family),
-                adoptionDetails: this._extractAdoptionDetails(family)
-            });
+        if (typeof individualSelection.getAttributeFact === 'function') {
+            const factAttributes = individualSelection.getAttributeFact();
+            attributes.push(...this._extractAttributeDetails(factAttributes, 'fact'));
         }
         
-        return families;
+        return attributes.filter(Boolean);
     }
     
     /**
-     * Log si mode verbose
+     * Détails d'attributs
+     * @private
+     */
+    _extractAttributeDetails(attrSelection, type) {
+        const out = [];
+        const arr = attrSelection.arraySelect ? attrSelection.arraySelect() : [];
+        
+        for (let i = 0; i < arr.length; i++) {
+            const attr = arr[i];
+            const data = {
+                type,
+                value: (attr.value && attr.value()[0]) || null,
+                date: this._extractDate(attr.getDate && attr.getDate()),
+                place: this._extractPlace(attr.getPlace && attr.getPlace()),
+                age: typeof attr.getAge === 'function' ? this._extractAge(attr.getAge()) : null,
+                notes: this.options.extractNotes ? this._extractEventNotes(attr) : [],
+                sources: this.options.extractSources ? this._extractEventSources(attr) : []
+            };
+            out.push(data);
+        }
+        return out;
+    }
+    
+    /**
+     * Relations directes (f,m,s, conjoints/enfants)
+     * @private
+     */
+    _extractDirectFamilyRelations(individualSelection) {
+        const relations = {
+            fatherId: null,
+            motherId: null,
+            siblingIds: [],
+            spouseIds: [],
+            childrenIds: []
+        };
+        
+        try {
+            // Parents & frères/soeurs via getFamilyAsChild()
+            if (typeof individualSelection.getFamilyAsChild === 'function') {
+                const famsAsChild = individualSelection.getFamilyAsChild().arraySelect();
+                famsAsChild.forEach(fam => {
+                    const father = fam.getFather && fam.getFather().value()[0];
+                    const mother = fam.getMother && fam.getMother().value()[0];
+                    if (father) relations.fatherId = father;
+                    if (mother) relations.motherId = mother;
+                    
+                    // enfants de la même famille -> siblings
+                    const children = fam.getChild && fam.getChild().arraySelect();
+                    children.forEach(ch => {
+                        const cid = ch.value()[0];
+                        if (cid && ![relations.fatherId, relations.motherId].includes(cid)) {
+                            if (!relations.siblingIds.includes(cid)) relations.siblingIds.push(cid);
+                        }
+                    });
+                });
+            }
+            
+            // Conjoints & enfants via getFamilyAsSpouse()
+            if (typeof individualSelection.getFamilyAsSpouse === 'function') {
+                const famsAsSpouse = individualSelection.getFamilyAsSpouse().arraySelect();
+                famsAsSpouse.forEach(fam => {
+                    const husb = fam.getHusband && fam.getHusband().value()[0];
+                    const wife = fam.getWife && fam.getWife().value()[0];
+                    const me = individualSelection.pointer()[0];
+                    const spouse = me === husb ? wife : husb;
+                    if (spouse && !relations.spouseIds.includes(spouse)) relations.spouseIds.push(spouse);
+                    
+                    const children = fam.getChild && fam.getChild().arraySelect();
+                    children.forEach(ch => {
+                        const cid = ch.value()[0];
+                        if (cid && !relations.childrenIds.includes(cid)) relations.childrenIds.push(cid);
+                    });
+                });
+            }
+            
+        } catch (error) {
+            this._log(`⚠️ Erreur extraction relations directes: ${error.message}`);
+        }
+        
+        return relations;
+    }
+    
+    /**
+     * Événements familiaux "projetés" sur l'individu (MARR, etc.)
+     * @private
+     */
+    _extractFamilyEventsOptimized(individualSelection, familyRelations) {
+        const out = [];
+        
+        try {
+            if (typeof individualSelection.getFamilyAsSpouse !== 'function') return out;
+            const fams = individualSelection.getFamilyAsSpouse().arraySelect();
+            fams.forEach(fam => {
+                const marrSel = fam.getEventMarriage && fam.getEventMarriage();
+                const marrArr = marrSel ? marrSel.arraySelect() : [];
+                marrArr.forEach(ev => {
+                    out.push({
+                        type: 'marriage',
+                        date: this._extractDate(ev.getDate && ev.getDate()),
+                        place: this._extractPlace(ev.getPlace && ev.getPlace()),
+                        spouseId: (() => {
+                            const me = individualSelection.pointer()[0];
+                            const h = fam.getHusband && fam.getHusband().value()[0];
+                            const w = fam.getWife && fam.getWife().value()[0];
+                            if (me && h === me) return w;
+                            if (me && w === me) return h;
+                            return null;
+                        })(),
+                        notes: this._extractEventNotes(ev),
+                        sources: this._extractEventSources(ev),
+                        multimedia: []
+                    });
+                });
+            });
+        } catch (error) {
+            this._log(`⚠️ Erreur extraction événements familiaux: ${error.message}`);
+        }
+        
+        return out;
+    }
+    
+    /**
+     * Logging helper
      * @private
      */
     _log(message) {
@@ -438,16 +510,12 @@ export class DataExtractor {
             // === ÉVÉNEMENTS FAMILIAUX ===
             events: this._extractFamilyEvents(familySelection),
             
-            // === NOTES & SOURCES ===
-            notes: this.options.extractNotes ? this._extractFamilyNotes(familySelection) : [],
-            sources: this.options.extractSources ? this._extractFamilySources(familySelection) : [],
-            multimedia: this.options.extractMedia ? this._extractFamilyMultimedia(familySelection) : [],
+            // === SOURCES / NOTES ===
+            sources: this._extractFamilySources(familySelection),
+            notes: this._extractFamilyNotes(familySelection),
             
-            // === MÉTADONNÉES ===
-            metadata: {
-                changeDate: this._extractChangeDate(familySelection),
-                quality: 0 // Calculé plus tard
-            }
+            // === MÉDIAS (si présents sur FAM) ===
+            multimedia: this._extractFamilyMultimedia(familySelection)
         };
         
         return result;
@@ -463,25 +531,21 @@ export class DataExtractor {
     }
     
     /**
-     * Extrait références des enfants
+     * Extrait références enfants
      * @private
      */
     _extractChildrenReferences(childrenSelection) {
-        const children = [];
-        const childArray = childrenSelection.arraySelect();
-        
-        for (let i = 0; i < childArray.length; i++) {
-            const childRef = childArray[i].value()[0];
-            if (childRef) {
-                children.push(childRef);
-            }
-        }
-        
-        return children;
+        const out = [];
+        if (!childrenSelection || childrenSelection.length === 0) return out;
+        childrenSelection.arraySelect().forEach(ch => {
+            const cid = ch.value()[0];
+            if (cid) out.push(cid);
+        });
+        return out;
     }
     
     /**
-     * Extrait tous les événements familiaux
+     * Événements familiaux (MARR, DIV, …)
      * @private
      */
     _extractFamilyEvents(familySelection) {
@@ -500,154 +564,106 @@ export class DataExtractor {
             { method: 'getEventSeparation', type: 'separation' }
         ];
         
-        // Extraire événements standards
         familyEvents.forEach(({ method, type }) => {
-            if (typeof familySelection[method] === 'function') {
-                const eventSelection = familySelection[method]();
-                events.push(...this._extractEventDetails(eventSelection, type));
-            }
+            if (typeof familySelection[method] !== 'function') return;
+            const selection = familySelection[method]();
+            const arr = selection.arraySelect();
+            
+            arr.forEach(ev => {
+                const eventData = {
+                    type,
+                    date: this._extractDate(ev.getDate()),
+                    place: this._extractPlace(ev.getPlace()),
+                    age: typeof ev.getAge === 'function' ? this._extractAge(ev.getAge()) : null,
+                    cause: this._extractCause(ev),
+                    notes: this.options.extractNotes ? this._extractEventNotes(ev) : [],
+                    sources: this.options.extractSources ? this._extractEventSources(ev) : [],
+                    multimedia: this.options.extractMedia ? this._extractEventMultimedia(ev) || [] : [],
+                    // Champs spécifiques
+                    eventType: (ev.getType && ev.getType().length > 0) ? (ev.getType().value()[0] || null) : null
+                };
+                events.push(eventData);
+            });
         });
         
-        return events.filter(event => event !== null);
-    }
-    _extractSources(rootSelection) { return []; }
-    _extractRepositories(rootSelection) { return []; }
-    
-    /**
-     * Extrait tous les médias (OBJE records) du GEDCOM
-     * @private
-     */
-    _extractMedia(rootSelection) {
-        const mediaList = [];
-        
-        try {
-            const multimediaRecords = rootSelection.getMultimediaRecord().arraySelect();
-            // Log de synthèse uniquement
-            this._log(`Extraction de ${multimediaRecords.length} enregistrements MULTIMEDIA...`);
-            
-            for (let i = 0; i < multimediaRecords.length; i++) {
-                const mediaRecord = multimediaRecords[i];
-                const mediaData = this._extractSingleMedia(mediaRecord);
-                if (mediaData) {
-                    mediaList.push(mediaData);
-                }
-            }
-            
-        } catch (error) {
-            this._log(`⚠️ Erreur extraction médias: ${error.message}`);
-        }
-        
-        return mediaList;
+        return events;
     }
     
     /**
-     * Extrait un enregistrement MULTIMEDIA complet
+     * SOURCES au niveau famille
      * @private
      */
-    _extractSingleMedia(mediaRecord) {
+    _extractFamilySources(familySelection) {
+        const sources = [];
         try {
-            const pointer = mediaRecord.pointer()[0];
-            if (!pointer) return null;
-            
-            // Extraction silencieuse (log désactivé pour éviter la pollution)
-            // this._log(`   Extraction média ${pointer}...`);
-            
-            // Extraire FILE via getFileReference() ou get('FILE')
-            let file = null;
-            const fileSelection = mediaRecord.getFileReference();
-            if (fileSelection.length > 0) {
-                file = fileSelection.value()[0];
-            } else {
-                // Méthode alternative via get
-                const fileViaGet = mediaRecord.get('FILE');
-                if (fileViaGet && fileViaGet.length > 0) {
-                    file = fileViaGet.value()[0];
-                }
-            }
-            
-            // Extraire TITL via get('TITL')
-            let title = null;
-            const titleViaGet = mediaRecord.get('TITL');
-            if (titleViaGet && titleViaGet.length > 0) {
-                title = titleViaGet.value()[0];
-            }
-            
-            // Extraire FORM
-            const format = this._extractMediaFormat(mediaRecord);
-            
-            const mediaData = {
-                pointer,
-                file,
-                title,
-                format,
-                notes: this._extractMediaNotes(mediaRecord),
-                sources: this._extractMediaSources(mediaRecord),
-                
-                // Données additionnelles
-                hasBlob: this._hasMediaBlob(mediaRecord),
-                type: this._getMediaType(format, file)
-            };
-            
-            // Log désactivé pour éviter la pollution console
-            // this._log(`   ✅ Média ${pointer}: ${title || 'Sans titre'} (${format || 'format inconnu'})`);
-            return mediaData;
-            
-        } catch (error) {
-            this._log(`⚠️ Erreur extraction média individuel: ${error.message}`);
-            return null;
-        }
-    }
-    
-    /**
-     * Extrait le format d'un média
-     * @private
-     */
-    _extractMediaFormat(mediaRecord) {
-        try {
-            // Essayer différentes méthodes pour obtenir le format
-            const formatMethods = ['getFormat', 'getForm'];
-            
-            for (const method of formatMethods) {
-                if (typeof mediaRecord[method] === 'function') {
-                    const formatSelection = mediaRecord[method]();
-                    if (formatSelection.length > 0) {
-                        return formatSelection.value()[0];
+            const sourceSelection = familySelection.get('SOUR');
+            if (sourceSelection && sourceSelection.length > 0) {
+                sourceSelection.arraySelect().forEach(source => {
+                    const srcPtr = source.value()[0];
+                    if (srcPtr) {
+                        sources.push({
+                            pointer: srcPtr,
+                            page: source.get('PAGE')?.value()?.[0] || null,
+                            quality: source.get('QUAY')?.value()?.[0] || null
+                        });
                     }
-                }
+                });
             }
-            
-            // Méthode générique via get('FORM')
-            const formSelection = mediaRecord.get('FORM');
-            if (formSelection && formSelection.length > 0) {
-                return formSelection.value()[0];
-            }
-            
         } catch (error) {
-            this._log(`⚠️ Erreur extraction format média: ${error.message}`);
+            this._log(`⚠️ Erreur extraction sources famille: ${error.message}`);
         }
-        
-        return null;
+        return sources;
     }
     
     /**
-     * Extrait toutes les notes (NOTE records) du GEDCOM
+     * NOTES au niveau famille (inline + refs)
+     * @private
+     */
+    _extractFamilyNotes(familySelection) {
+        // Réutilise la logique d’événement
+        return this._extractEventNotes(familySelection);
+    }
+    
+    /**
+     * MÉDIAS au niveau famille
+     * @private
+     */
+    _extractFamilyMultimedia(familySelection) {
+        const mediaRefs = [];
+        try {
+            const multimedia = familySelection.get('OBJE');
+            if (multimedia && multimedia.length > 0) {
+                multimedia.arraySelect().forEach(m => {
+                    const ptr = m.value()[0];
+                    if (ptr?.startsWith('@')) mediaRefs.push(ptr);
+                });
+            }
+        } catch (error) {
+            this._log(`⚠️ Erreur extraction médias famille: ${error.message}`);
+        }
+        return mediaRefs;
+    }
+    
+    /**
+     * Extraction des notes (records @N...@)
      * @private
      */
     _extractNotes(rootSelection) {
         const notesList = [];
         
         try {
-            const noteRecords = rootSelection.getNoteRecord().arraySelect();
+            const noteRecordSelection = rootSelection.getNoteRecord();
+            if (!noteRecordSelection || noteRecordSelection.length === 0) return [];
+            
+            const noteRecords = noteRecordSelection.arraySelect();
+            
             // Log de synthèse uniquement
             this._log(`Extraction de ${noteRecords.length} enregistrements NOTE...`);
             
-            for (let i = 0; i < noteRecords.length; i++) {
-                const noteRecord = noteRecords[i];
-                const noteData = this._extractSingleNote(noteRecord);
-                if (noteData) {
-                    notesList.push(noteData);
-                }
-            }
+            noteRecords.forEach(noteRecord => {
+                const noteData = this._extractSingleNoteRecord(noteRecord);
+                if (noteData) notesList.push(noteData);
+            });
             
         } catch (error) {
             this._log(`⚠️ Erreur extraction notes: ${error.message}`);
@@ -657,16 +673,13 @@ export class DataExtractor {
     }
     
     /**
-     * Extrait un enregistrement NOTE complet
+     * Extrait un record NOTE
      * @private
      */
-    _extractSingleNote(noteRecord) {
+    _extractSingleNoteRecord(noteRecord) {
         try {
             const pointer = noteRecord.pointer()[0];
             if (!pointer) return null;
-            
-            // Extraction silencieuse (log désactivé pour éviter la pollution)
-            // this._log(`   Extraction note ${pointer}...`);
             
             // Extraire le texte de la note (avec CONT/CONC)
             const noteText = this._extractNoteText(noteRecord);
@@ -694,231 +707,15 @@ export class DataExtractor {
     
     /**
      * Extrait le texte complet d'une note (avec CONT/CONC)
-     * @private
-     */
-    _extractNoteText(noteRecord) {
-        try {
-            // Méthode 1 : via value() qui gère automatiquement CONT/CONC
-            const textValue = noteRecord.value();
-            if (textValue && textValue.length > 0 && textValue[0]) {
-                return textValue[0];
-            }
-            
-        } catch (error) {
-            this._log(`⚠️ Erreur extraction texte note: ${error.message}`);
-        }
-        
-        return null;
-    }
-    
-    /**
-     * Extrait les notes d'un enregistrement MULTIMEDIA
-     * @private
-     */
-    _extractMediaNotes(mediaRecord) {
-        const notes = [];
-        
-        try {
-            // Utiliser get('NOTE') au lieu de getNote()
-            const noteSelection = mediaRecord.get('NOTE');
-            if (noteSelection && noteSelection.length > 0) {
-                noteSelection.arraySelect().forEach(note => {
-                    const notePointer = note.value()[0];
-                    if (notePointer) {
-                        notes.push({
-                            type: 'reference',
-                            pointer: notePointer
-                        });
-                    }
-                });
-            }
-            
-        } catch (error) {
-            this._log(`⚠️ Erreur extraction notes média: ${error.message}`);
-        }
-        
-        return notes;
-    }
-    
-    /**
-     * Extrait les sources d'un enregistrement MULTIMEDIA
-     * @private
-     */
-    _extractMediaSources(mediaRecord) {
-        const sources = [];
-        
-        try {
-            // Utiliser get('SOUR') au lieu de getSource()
-            const sourceSelection = mediaRecord.get('SOUR');
-            if (sourceSelection && sourceSelection.length > 0) {
-                sourceSelection.arraySelect().forEach(source => {
-                    const sourcePointer = source.value()[0];
-                    if (sourcePointer) {
-                        sources.push({
-                            pointer: sourcePointer
-                        });
-                    }
-                });
-            }
-            
-        } catch (error) {
-            this._log(`⚠️ Erreur extraction sources média: ${error.message}`);
-        }
-        
-        return sources;
-    }
-    
-    /**
-     * Extrait les sources d'un enregistrement NOTE
-     * @private
-     */
-    _extractNoteSources(noteRecord) {
-        const sources = [];
-        
-        try {
-            // Utiliser get('SOUR') au lieu de getSource()
-            const sourceSelection = noteRecord.get('SOUR');
-            if (sourceSelection && sourceSelection.length > 0) {
-                sourceSelection.arraySelect().forEach(source => {
-                    const sourcePointer = source.value()[0];
-                    if (sourcePointer) {
-                        sources.push({
-                            pointer: sourcePointer
-                        });
-                    }
-                });
-            }
-            
-        } catch (error) {
-            this._log(`⚠️ Erreur extraction sources note: ${error.message}`);
-        }
-        
-        return sources;
-    }
-    
-    /**
-     * Vérifie si un média a des données BLOB embarquées
-     * @private
-     */
-    _hasMediaBlob(mediaRecord) {
-        try {
-            const blobSelection = mediaRecord.get('BLOB');
-            return blobSelection && blobSelection.length > 0;
-        } catch (error) {
-            return false;
-        }
-    }
-    
-    /**
-     * Détermine le type de média à partir du format et du fichier
-     * @private
-     */
-    _getMediaType(format, file) {
-        if (!format && !file) return 'unknown';
-        
-        const formatLower = (format || '').toLowerCase();
-        const fileExt = file ? file.split('.').pop()?.toLowerCase() : '';
-        
-        // Types d'images
-        if (['jpeg', 'jpg', 'png', 'gif', 'bmp', 'tiff', 'pict', 'webp'].includes(formatLower) ||
-            ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tif', 'tiff', 'webp'].includes(fileExt)) {
-            return 'image';
-        }
-        
-        // Types audio
-        if (['wav', 'mp3', 'aiff', 'au', 'ogg', 'm4a'].includes(formatLower) ||
-            ['wav', 'mp3', 'aif', 'aiff', 'au', 'ogg', 'm4a'].includes(fileExt)) {
-            return 'audio';
-        }
-        
-        // Types vidéo
-        if (['mov', 'mp4', 'mpeg', 'avi', 'wmv', 'flv'].includes(formatLower) ||
-            ['mov', 'mp4', 'mpg', 'mpeg', 'avi', 'wmv', 'flv'].includes(fileExt)) {
-            return 'video';
-        }
-        
-        // Documents
-        if (['pdf', 'doc', 'docx', 'txt', 'rtf'].includes(formatLower) ||
-            ['pdf', 'doc', 'docx', 'txt', 'rtf'].includes(fileExt)) {
-            return 'document';
-        }
-        
-        // URL
-        if (file && (file.startsWith('http://') || file.startsWith('https://') || file.startsWith('ftp://'))) {
-            return 'url';
-        }
-        
-        return 'other';
-    }
-    
-    /**
-     * Extrait les notes d'un individu (références ET inline)
-     * @private
-     */
-    _extractIndividualNotes(individualSelection) {
-        const noteRefs = [];
-        const inlineNotes = [];
-        const pointer = individualSelection.pointer()[0];
-        
-        try {
-            console.log(`🔍 [DEBUG] Extraction notes pour ${pointer}`);
-            
-            // Notes au niveau individu (NOTE directes)
-            const noteSelection = individualSelection.getNote();
-            console.log(`🔍 [DEBUG] getNote() length: ${noteSelection.length}`);
-            
-            if (noteSelection.length > 0) {
-                noteSelection.arraySelect().forEach((note, index) => {
-                    const noteValue = note.value()[0];
-                    console.log(`🔍 [DEBUG] Note ${index}: "${noteValue}"`);
-                    if (!noteValue) return;
-                    
-                    if (noteValue.startsWith('@')) {
-                        // C'est une référence vers une note externe
-                        noteRefs.push(noteValue);
-                        console.log(`🔍 [DEBUG] → Référence note: ${noteValue}`);
-                    } else {
-                        // C'est une note inline avec son texte complet
-                        const fullText = this._extractNoteText(note);
-                        console.log(`🔍 [DEBUG] → Note inline: "${fullText?.substring(0, 50)}..."`);
-                        if (fullText) {
-                            inlineNotes.push({
-                                text: fullText,
-                                type: 'individual',
-                                // Générer un ID unique pour cette note inline
-                                id: `INLINE_${pointer}_${inlineNotes.length}`
-                            });
-                        }
-                    }
-                });
-            }
-        } catch (error) {
-            this._log(`⚠️ Erreur extraction notes individu: ${error.message}`);
-        }
-        
-        console.log(`🔍 [DEBUG] RÉSULTAT pour ${pointer}: ${noteRefs.length} refs, ${inlineNotes.length} inline`);
-        
-        if (inlineNotes.length > 0) {
-            this._log(`   📝 ${inlineNotes.length} notes inline trouvées pour ${pointer}`);
-        }
-        
-        return { refs: noteRefs, inline: inlineNotes };
-    }
-    
-    /**
-     * [NOUVEAU] Reconstruit le texte complet d'une note GEDCOM inline
-     * Gère correctement les tags GEDCOM :
+     * [MOD 2025-08-08] Reconstruction explicite:
      *  - CONC = concaténation (même ligne)
      *  - CONT = continuation (nouvelle ligne)
      * @private
      */
     _extractNoteText(noteNode) {
         try {
-            // 1) valeur de la ligne NOTE (ou NOTE record) elle-même
-            const head = (typeof noteNode.value === 'function' && noteNode.value()[0]) || '';
+            const head = (typeof noteNode.value === 'function' && noteNode.value()?.[0]) || '';
             const parts = [head];
-
-            // 2) enfants (CONT/CONC) à assembler manuellement
             const children = (typeof noteNode.get === 'function') ? noteNode.get(null) : null;
             if (children && children.length > 0 && typeof children.arraySelect === 'function') {
                 children.arraySelect().forEach(child => {
@@ -929,7 +726,6 @@ export class DataExtractor {
                     else if (tag === 'CONC') parts.push(v);
                 });
             }
-
             const text = parts.join('');
             return text && text.trim().length ? text : null;
         } catch (error) {
@@ -937,46 +733,63 @@ export class DataExtractor {
             return null;
         }
     }
-    
+            
     /**
-     * Extrait les références aux médias d'un individu
+     * Lit HEAD > PLAC > FORM si présent
      * @private
      */
-    _extractIndividualMediaRefs(individualSelection) {
-        const mediaRefs = [];
-        
+    _readPlacFormFromHead(rootSelection) {
         try {
-            // Médias via getMultimedia()
-            if (typeof individualSelection.getMultimedia === 'function') {
-                const multimediaSelection = individualSelection.getMultimedia();
-                if (multimediaSelection.length > 0) {
-                    multimediaSelection.arraySelect().forEach(media => {
-                        const mediaPointer = media.value()[0];
-                        if (mediaPointer && mediaPointer.startsWith('@')) {
-                            mediaRefs.push(mediaPointer);
-                        }
-                    });
-                }
-            }
-            
-            // Médias via get('OBJE')
-            const objeSelection = individualSelection.get('OBJE');
-            if (objeSelection && objeSelection.length > 0) {
-                objeSelection.arraySelect().forEach(media => {
-                    const mediaPointer = media.value()[0];
-                    if (mediaPointer && mediaPointer.startsWith('@')) {
-                        mediaRefs.push(mediaPointer);
-                    }
+            const head = rootSelection.get && rootSelection.get('HEAD');
+            const viaHead = head && head.get && head.get('PLAC') && head.get('PLAC').get && head.get('PLAC').get('FORM') && head.get('PLAC').get('FORM').value && head.get('PLAC').get('FORM').value();
+            if (viaHead && viaHead[0]) return viaHead[0];
+            const viaRoot = rootSelection.get && rootSelection.get('PLAC') && rootSelection.get('PLAC').get && rootSelection.get('PLAC').get('FORM') && rootSelection.get('PLAC').get('FORM').value && rootSelection.get('PLAC').get('FORM').value();
+            return (viaRoot && viaRoot[0]) || null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    /**
+     * Applique la convention de PLAC à une valeur brute
+     * @private
+     */
+    _applyPlacForm(rawPlac, formString) {
+        if (!rawPlac || !formString) return null;
+        const keys = formString.split(',').map(s => s.trim()).filter(Boolean).map(s => s.toLowerCase().replace(/\s+/g, '_'));
+        const parts = String(rawPlac).split(',').map(s => s.trim());
+        let segs = parts.slice(0);
+        if (segs.length > keys.length) {
+            const head = segs.slice(0, keys.length - 1);
+            const tail = segs.slice(keys.length - 1).join(', ');
+            segs = [...head, tail];
+        } else if (segs.length < keys.length) {
+            segs = [...segs, ...Array(keys.length - segs.length).fill(null)];
+        }
+        const map = {};
+        keys.forEach((k, i) => { map[k] = (segs[i] === '' ? null : segs[i]); });
+        return map;
+    }
+
+    /**
+     * Sources d'un record NOTE
+     * @private
+     */
+    _extractNoteSources(noteRecord) {
+        const sources = [];
+        try {
+            const sourceSelection = noteRecord.get('SOUR');
+            if (sourceSelection && sourceSelection.length > 0) {
+                sourceSelection.arraySelect().forEach(source => {
+                    const srcPtr = source.value()[0];
+                    if (srcPtr) sources.push({ pointer: srcPtr });
                 });
             }
         } catch (error) {
-            this._log(`⚠️ Erreur extraction références médias individu: ${error.message}`);
+            this._log(`⚠️ Erreur extraction sources note: ${error.message}`);
         }
-        
-        return mediaRefs;
+        return sources;
     }
-    
-    _extractMetadata(rootSelection) { return {}; }
     
     _extractPhoneticName(nameSelection) { return null; }
     _extractRomanizedName(nameSelection) { return null; }
@@ -990,16 +803,13 @@ export class DataExtractor {
         const placeValue = placeSelection.value()[0] || null;
         if (!placeValue) return null;
         
-        // [NOUVEAU] Parser le lieu avec subdivision
-        const placeData = parsePlaceWithSubdivision(placeValue);
-        
-        // Structure temporaire pour transporter coordonnées ET subdivision
+        // Structure temporaire pour transporter les coordonnées
         // Note: Cet objet sera utilisé uniquement pendant l'extraction
         // Les coordonnées ne seront PAS stockées dans le cache individuel final
-        const enrichedPlaceData = {
-            value: placeData.normalizedPlace || placeValue, // Lieu normalisé
-            fullPlace: placeData.fullPlace, // Lieu complet original
-            subdivision: placeData.subdivision || null, // Subdivision (Synagogue, École, etc.)
+        const placeData = {
+            value: placeValue,
+            // Mapping structuré selon HEAD>PLAC>FORM (si défini)
+            structured: (this._placForm ? this._applyPlacForm(placeValue, this._placForm) : null),
             // Propriétés temporaires pour transport vers familyTownsStore
             _tempLatitude: null,
             _tempLongitude: null
@@ -1056,8 +866,8 @@ export class DataExtractor {
                                     const lon = parseFloat(lonValue);
                                     
                                     if (!isNaN(lat) && !isNaN(lon)) {
-                                        enrichedPlaceData._tempLatitude = lat;
-                                        enrichedPlaceData._tempLongitude = lon;
+                                        placeData._tempLatitude = lat;
+                                        placeData._tempLongitude = lon;
                                         // Log removed: coordinate extraction working perfectly
                                     }
                                 }
@@ -1071,9 +881,9 @@ export class DataExtractor {
             this._log(`   ⚠️ Impossible d'extraire coordonnées pour "${placeValue}": ${error.message}`);
         }
         
-        // IMPORTANT : Retourner l'objet complet TEMPORAIREMENT avec subdivision
-        // CacheBuilder devra extraire les coordonnées et ne stocker que la valeur + subdivision
-        return enrichedPlaceData;
+        // IMPORTANT : Retourner l'objet complet TEMPORAIREMENT
+        // CacheBuilder devra extraire les coordonnées et ne stocker que la valeur
+        return placeData;
     }
     _extractAge(ageSelection) { return null; }
     _extractCause(eventSelection) { return null; }
@@ -1081,585 +891,447 @@ export class DataExtractor {
      * Extrait les notes d'un événement ou attribut
      * @private
      */
-    _extractEventNotes(eventSelection) {
-        const notes = [];
-        
-        try {
-            // Notes liées via référence (@N1@)
-            const noteRefs = eventSelection.getNote();
-            if (noteRefs.length > 0) {
-                noteRefs.arraySelect().forEach(noteRef => {
-                    const notePointer = noteRef.value()[0];
-                    if (notePointer) {
-                        notes.push({
-                            type: 'reference',
-                            pointer: notePointer
-                        });
-                    }
-                });
-            }
-            
-            // Notes embarquées directement dans l'événement
-            const embeddedNotes = eventSelection.get('NOTE');
-            if (embeddedNotes && embeddedNotes.length > 0) {
-                embeddedNotes.arraySelect().forEach(note => {
-                    const text = note.value()[0];
-                    if (text && !text.startsWith('@')) { // Pas une référence
-                        notes.push({
-                            type: 'embedded',
-                            text: text
-                        });
-                    }
-                });
-            }
-            
-        } catch (error) {
-            this._log(`⚠️ Erreur extraction notes événement: ${error.message}`);
-        }
-        
-        return notes;
-    }
-    
     /**
-     * Extrait les sources d'un événement ou attribut
-     * @private
-     */
-    _extractEventSources(eventSelection) {
-        const sources = [];
-        
-        try {
-            // Utiliser get('SOUR') au lieu de getSource() qui n'existe pas
-            const sourceSelection = eventSelection.get('SOUR');
-            if (sourceSelection && sourceSelection.length > 0) {
-                sourceSelection.arraySelect().forEach(source => {
-                    const sourceData = {
-                        pointer: source.value()[0],
-                        page: null,
-                        quality: null
-                    };
-                    
-                    // Page
-                    const pageSelection = source.get('PAGE');
-                    if (pageSelection && pageSelection.length > 0) {
-                        sourceData.page = pageSelection.value()[0];
-                    }
-                    
-                    // Qualité (QUAY)
-                    const qualitySelection = source.get('QUAY');
-                    if (qualitySelection && qualitySelection.length > 0) {
-                        sourceData.quality = parseInt(qualitySelection.value()[0]);
-                    }
-                    
-                    sources.push(sourceData);
-                });
-            }
-            
-        } catch (error) {
-            this._log(`⚠️ Erreur extraction sources événement: ${error.message}`);
-        }
-        
-        return sources;
-    }
-    
-    /**
-     * [NOUVEAU] Extrait les notes d'un événement ou attribut
+     * Extrait les notes d'un événement ou attribut
+     * [MOD 2025-08-08] Support mixte: références @N...@ et texte inline avec reconstruction CONT/CONC
      * @private
      */
     _extractEventNotes(eventSelection) {
         const notes = [];
-        
         try {
-            console.log(`🔍 [DEBUG EVENT NOTES] Extraction notes pour événement`);
-            
-            // Méthode 1: Utiliser getNote() si disponible
             if (typeof eventSelection.getNote === 'function') {
-                const noteSelection = eventSelection.getNote();
-                console.log(`🔍 [DEBUG EVENT NOTES] getNote() length: ${noteSelection.length}`);
-                
-                if (noteSelection.length > 0) {
-                    noteSelection.arraySelect().forEach((note, index) => {
-                        const noteValue = note.value()[0];
-                        console.log(`🔍 [DEBUG EVENT NOTES] Note ${index}: "${noteValue}"`);
-                        
-                        if (noteValue && noteValue.startsWith('@')) {
-                            // Référence vers une note externe
-                            notes.push({ type: 'reference', pointer: noteValue });
-                            console.log(`🔍 [DEBUG EVENT NOTES] → Référence: ${noteValue}`);
+                const mixed = eventSelection.getNote();
+                if (mixed && mixed.length > 0) {
+                    mixed.arraySelect().forEach(n => {
+                        const raw = (n.value && n.value()[0]) || '';
+                        if (raw && raw.startsWith('@')) {
+                            notes.push({ type: 'reference', pointer: raw });
                         } else {
-                            // Note inline - utiliser _extractNoteText pour gérer CONT/CONC
-                            const fullText = this._extractNoteText(note);
-                            console.log(`🔍 [DEBUG EVENT NOTES] → Inline: "${fullText?.substring(0, 50)}..."`);
-                            if (fullText) {
-                                notes.push({ type: 'embedded', text: fullText });
-                            }
+                            const text = this._extractNoteText(n);
+                            if (text) notes.push({ type: 'embedded', text });
                         }
                     });
                 }
             }
+            const embeddedNotes = eventSelection.get && eventSelection.get('NOTE');
+            if (embeddedNotes && embeddedNotes.length > 0) {
+                embeddedNotes.arraySelect().forEach(n => {
+                    const raw = (n.value && n.value()[0]) || '';
+                    if (raw && raw.startsWith('@')) {
+                        if (!notes.some(x => x.type === 'reference' && x.pointer === raw)) {
+                            notes.push({ type: 'reference', pointer: raw });
+                        }
+                    } else {
+                        const text = this._extractNoteText(n);
+                        if (text) notes.push({ type: 'embedded', text });
+                    }
+                });
+            }
         } catch (error) {
             this._log(`⚠️ Erreur extraction notes événement: ${error.message}`);
         }
-        
-        console.log(`🔍 [DEBUG EVENT NOTES] RÉSULTAT: ${notes.length} notes trouvées`);
-        if (notes.length > 0) {
-            console.log(`🔍 [DEBUG EVENT NOTES] Notes:`, notes.map(n => `${n.type}: ${n.text?.substring(0, 30) || n.pointer}...`));
-        }
-        
         return notes;
     }
     
     /**
-     * Extrait les médias d'un événement ou attribut
+     * Extrait les sources d'un événement/attribut
      * @private
      */
-    _extractEventMultimedia(eventSelection) {
-        const multimedia = [];
+    _extractEventSources(eventSelection) {
+        const sources = [];
+        try {
+            const sourceSelection = eventSelection.get('SOUR');
+            if (sourceSelection && sourceSelection.length > 0) {
+                sourceSelection.arraySelect().forEach(source => {
+                    const sourceData = {
+                        pointer: source.value()[0] || null,
+                        page: source.get('PAGE')?.value()?.[0] || null,
+                        quality: source.get('QUAY')?.value()?.[0] || null
+                    };
+                    sources.push(sourceData);
+                });
+            }
+        } catch (error) {
+            this._log(`⚠️ Erreur extraction sources événement: ${error.message}`);
+        }
+        return sources;
+    }
+    
+    /**
+     * Notes au niveau INDI (inline + refs)
+     * @private
+     */
+    _extractIndividualNotes(individualSelection) {
+        const noteRefs = [];
+        const inlineNotes = [];
         
         try {
-            // Médias liés via référence (@M1@) - méthode alternative
-            const multimediaRefs = eventSelection.getMultimedia ? eventSelection.getMultimedia() : eventSelection.get('OBJE');
-            if (multimediaRefs.length > 0) {
-                multimediaRefs.arraySelect().forEach(mediaRef => {
-                    const mediaPointer = mediaRef.value()[0];
-                    if (mediaPointer) {
-                        multimedia.push({
-                            type: 'reference',
-                            pointer: mediaPointer
-                        });
+            const pointer = individualSelection.pointer()[0];
+            console.log(`🔍 [DEBUG] Extraction notes pour ${pointer}`);
+            
+            // Notes au niveau individu (NOTE directes)
+            const noteSelection = individualSelection.getNote();
+            console.log(`🔍 [DEBUG] getNote() length: ${noteSelection.length}`);
+            
+            if (noteSelection.length > 0) {
+                noteSelection.arraySelect().forEach((note, index) => {
+                    const noteValue = note.value()[0];
+                    console.log(`🔍 [DEBUG] Note ${index}: "${noteValue}"`);
+                    if (!noteValue) return;
+                    
+                    if (noteValue.startsWith('@')) {
+                        // C'est une référence vers une note externe
+                        noteRefs.push(noteValue);
+                        console.log(`🔍 [DEBUG] → Référence note: ${noteValue}`);
+                    } else {
+                        // C'est une note inline avec son texte complet
+                        const fullText = this._extractNoteText(note);
+                        console.log(`🔍 [DEBUG] → Note inline: "${fullText?.substring(0, 50)}..."`);
+                        if (fullText) {
+                            inlineNotes.push({
+                                text: fullText,
+                                type: 'individual',
+                                // Générer un ID unique pour cette note inline
+                                id: `INLINE_${pointer}_${inlineNotes.length}`
+                            });
+                        }
                     }
                 });
             }
             
-            // Médias embarqués directement dans l'événement
-            const embeddedMedia = eventSelection.get('OBJE');
-            if (embeddedMedia && embeddedMedia.length > 0) {
-                embeddedMedia.arraySelect().forEach(media => {
-                    const mediaData = {
-                        type: 'embedded',
-                        file: null,
-                        format: null,
-                        title: null
-                    };
+            // Vérifier aussi avec get('NOTE') pour couvrir tous les cas
+            const embeddedNotes = individualSelection.get('NOTE');
+            console.log(`🔍 [DEBUG] get('NOTE') length: ${embeddedNotes ? embeddedNotes.length : 0}`);
+            
+            if (embeddedNotes && embeddedNotes.length > 0) {
+                embeddedNotes.arraySelect().forEach((note, index) => {
+                    const text = note.value()[0];
+                    console.log(`🔍 [DEBUG] Embedded note ${index}: "${text}"`);
+                    if (!text) return;
                     
-                    // FILE
-                    const fileSelection = media.get('FILE');
-                    if (fileSelection && fileSelection.length > 0) {
-                        mediaData.file = fileSelection.value()[0];
+                    if (text.startsWith('@')) {
+                        // C'est une référence - éviter les doublons
+                        if (!noteRefs.includes(text)) {
+                            noteRefs.push(text);
+                            console.log(`🔍 [DEBUG] → Référence note (get): ${text}`);
+                        }
+                    } else {
+                        // C'est une note inline
+                        const fullText = this._extractNoteText(note);
+                        console.log(`🔍 [DEBUG] → Note inline (get): "${fullText?.substring(0, 50)}..."`);
+                        if (fullText) {
+                            inlineNotes.push({
+                                text: fullText,
+                                type: 'individual', 
+                                id: `INLINE_${pointer}_${inlineNotes.length}`
+                            });
+                        }
                     }
-                    
-                    // FORM
-                    const formSelection = media.get('FORM');
-                    if (formSelection && formSelection.length > 0) {
-                        mediaData.format = formSelection.value()[0];
-                    }
-                    
-                    // TITL
-                    const titleSelection = media.get('TITL');
-                    if (titleSelection && titleSelection.length > 0) {
-                        mediaData.title = titleSelection.value()[0];
-                    }
-                    
-                    multimedia.push(mediaData);
                 });
             }
-            
         } catch (error) {
-            this._log(`⚠️ Erreur extraction médias événement: ${error.message}`);
+            this._log(`⚠️ Erreur extraction notes individu: ${error.message}`);
         }
         
-        return multimedia;
+        console.log(`🔍 [DEBUG] RÉSULTAT pour ${pointer}: ${noteRefs.length} refs, ${inlineNotes.length} inline`);
+        
+        if (noteRefs.length > 0) {
+            this._log(`   📌 ${noteRefs.length} références de notes trouvées pour ${pointer}`);
+        }
+        if (inlineNotes.length > 0) {
+            this._log(`   📝 ${inlineNotes.length} notes inline trouvées pour ${pointer}`);
+        }
+        
+        return { refs: noteRefs, inline: inlineNotes };
     }
-    _extractCustomEventType(eventSelection) { 
-        // Extraire le TYPE d'un événement EVEN custom
+    
+    /**
+     * Extrait les références aux médias d'un individu
+     * @private
+     */
+    _extractIndividualMediaRefs(individualSelection) {
+        const mediaRefs = [];
+        
         try {
-            const typeSelection = eventSelection.get('TYPE');
-            if (typeSelection && typeSelection.length > 0) {
-                const typeValue = typeSelection.value()[0];
-                console.log(`🔍 [DEBUG] Custom event TYPE: "${typeValue}"`);
-                return typeValue || null;
+            // Médias via getMultimedia()
+            if (typeof individualSelection.getMultimedia === 'function') {
+                const multimediaSelection = individualSelection.getMultimedia();
+                if (multimediaSelection.length > 0) {
+                    multimediaSelection.arraySelect().forEach(media => {
+                        const ptr = media.value()[0];
+                        if (ptr && ptr.startsWith('@')) {
+                            mediaRefs.push(ptr);
+                        }
+                    });
+                }
+            }
+            
+            // Fallback via get('OBJE')
+            const objeSelection = individualSelection.get('OBJE');
+            if (objeSelection && objeSelection.length > 0) {
+                objeSelection.arraySelect().forEach(media => {
+                    const ptr = media.value()[0];
+                    if (ptr && ptr.startsWith('@')) {
+                        mediaRefs.push(ptr);
+                    }
+                });
             }
         } catch (error) {
-            this._log(`⚠️ Erreur extraction TYPE événement custom: ${error.message}`);
+            this._log(`⚠️ Erreur extraction références médias individu: ${error.message}`);
+        }
+        
+        return mediaRefs;
+    }
+    
+    /**
+     * Extraction des SOURCES (records)
+     * @private
+     */
+    async _extractSources(rootSelection) {
+        const sourcesList = [];
+        
+        try {
+            const sourceRecords = rootSelection.getSourceRecord().arraySelect();
+            
+            // Log de synthèse uniquement
+            this._log(`Extraction de ${sourceRecords.length} enregistrements SOUR...`);
+            
+            for (let i = 0; i < sourceRecords.length; i++) {
+                const s = sourceRecords[i];
+                const pointer = s.pointer()[0];
+                if (!pointer) continue;
+                
+                // Extraire les informations essentielles d'une source
+                const sourceData = {
+                    pointer,
+                    title: (s.get('TITL') && s.get('TITL').value()[0]) || null,
+                    text: null,
+                    notes: [],
+                    repositories: []
+                };
+                
+                sourcesList.push(sourceData);
+            }
+            
+        } catch (error) {
+            this._log(`⚠️ Erreur extraction sources: ${error.message}`);
+        }
+        
+        return sourcesList;
+    }
+    
+    /**
+     * Extraction des REPOSITORIES (records)
+     * @private
+     */
+    async _extractRepositories(rootSelection) {
+        const repositories = [];
+        
+        try {
+            const repoRecords = rootSelection.getRepositoryRecord().arraySelect();
+            
+            // Log de synthèse uniquement
+            this._log(`Extraction de ${repoRecords.length} enregistrements REPO...`);
+            
+            for (let i = 0; i < repoRecords.length; i++) {
+                const r = repoRecords[i];
+                const pointer = r.pointer()[0];
+                if (!pointer) continue;
+                
+                repositories.push({
+                    pointer,
+                    name: (r.get('NAME') && r.get('NAME').value()[0]) || null,
+                    addr: (r.get('ADDR') && r.get('ADDR').value()[0]) || null
+                });
+            }
+            
+        } catch (error) {
+            this._log(`⚠️ Erreur extraction repositories: ${error.message}`);
+        }
+        
+        return repositories;
+    }
+    
+    /**
+     * Extraction des MÉDIAS (records)
+     * @private
+     */
+    _extractMedia(rootSelection) {
+        const mediaList = [];
+        
+        try {
+            const multimediaRecords = rootSelection.getMultimediaRecord().arraySelect();
+            // Log de synthèse uniquement
+            this._log(`Extraction de ${multimediaRecords.length} enregistrements MULTIMEDIA...`);
+            
+            for (let i = 0; i < multimediaRecords.length; i++) {
+                const mediaRecord = multimediaRecords[i];
+                const mediaData = this._extractSingleMedia(mediaRecord);
+                if (mediaData) {
+                    mediaList.push(mediaData);
+                }
+            }
+            
+        } catch (error) {
+            this._log(`⚠️ Erreur extraction médias: ${error.message}`);
+        }
+        
+        return mediaList;
+    }
+    
+    /**
+     * Extrait un enregistrement MULTIMEDIA complet
+     * @private
+     */
+    _extractSingleMedia(mediaRecord) {
+        try {
+            const pointer = mediaRecord.pointer()[0];
+            if (!pointer) return null;
+            
+            // Extraction silencieuse (log désactivé pour éviter la pollution)
+            // this._log(`   Extraction média ${pointer}...`);
+            
+            // Extraire FILE via getFileReference() ou get('FILE')
+            let file = null;
+            const fileSelection = mediaRecord.getFileReference();
+            if (fileSelection.length > 0) {
+                file = fileSelection.value()[0];
+            } else {
+                // Méthode alternative via get
+                const fileViaGet = mediaRecord.get('FILE');
+                if (fileViaGet && fileViaGet.length > 0) {
+                    file = fileViaGet.value()[0];
+                }
+            }
+            
+            // Extraire TITL via get('TITL')
+            const titleSelection = mediaRecord.get('TITL');
+            const title = (titleSelection && titleSelection.length > 0) ? titleSelection.value()[0] : null;
+            
+            // Extraire format
+            const format = this._extractMediaFormat(mediaRecord);
+            
+            const mediaData = {
+                pointer,
+                file,
+                title,
+                format,
+                notes: this._extractMediaNotes(mediaRecord),
+                sources: this._extractMediaSources(mediaRecord),
+                
+                // Données additionnelles
+                hasBlob: this._hasMediaBlob(mediaRecord),
+                type: this._getMediaType(format, file)
+            };
+            
+            // Log désactivé pour éviter la pollution console
+            // this._log(`   ✅ Média ${pointer}: ${title || file || 'sans titre'}...`);
+            return mediaData;
+            
+        } catch (error) {
+            this._log(`⚠️ Erreur extraction média: ${error.message}`);
+            return null;
+        }
+    }
+    
+    /**
+     * Déduit un format de média (heuristique à partir du TITL)
+     * @private
+     */
+    _extractMediaFormat(mediaRecord) {
+        try {
+            const titl = mediaRecord.get('TITL');
+            if (titl && titl.length > 0) {
+                const v = titl.value()[0] || '';
+                const m = v.match(/\.(jpg|jpeg|png|gif|tif|tiff|webp|pdf|mp4|mp3)$/i);
+                if (m) return m[1].toLowerCase();
+            }
+        } catch (error) {
+            // ignore
         }
         return null;
     }
+    
     /**
-     * Extrait les détails d'un attribut (OCCU, RESI, etc.)
+     * Déduit un type de média générique
      * @private
      */
-    _extractAttributeDetails(attrSelection, type) {
-        const attributes = [];
-        const attrArray = attrSelection.arraySelect();
-        
-        for (let i = 0; i < attrArray.length; i++) {
-            const attr = attrArray[i];
-            const attrData = {
-                type: type,
-                value: attr.value()[0] || null,  // Valeur de l'attribut (ex: "Forgeron" pour occupation)
-                date: this._extractDate(attr.getDate()),
-                place: this._extractPlace(attr.getPlace()),
-                age: typeof attr.getAge === 'function' ? this._extractAge(attr.getAge()) : null,
-                notes: this.options.extractNotes ? this._extractEventNotes(attr) : [],
-                sources: this.options.extractSources ? this._extractEventSources(attr) : []
-            };
-            
-            attributes.push(attrData);
-        }
-        
-        return attributes;
-    }
-    _extractFamilyAsSpouse(individualSelection) { return []; }
-    _extractAssociations(individualSelection) { return []; }
-    _extractMultimedia(individualSelection) { return []; }
-    _extractIdentifiers(individualSelection) { return {}; }
-    _extractAddresses(individualSelection) { return []; }
-    _extractChangeDate(individualSelection) { return null; }
-    _extractPedigree(familySelection) { return null; }
-    /**
-     * OPTIMISATION MAJEURE: Extraction directe des relations familiales
-     * Exploite les APIs read-gedcom sans indices intermédiaires
-     * @private
-     */
-    _extractDirectFamilyRelations(individualSelection) {
-        const result = {
-            fatherId: null,
-            motherId: null,
-            siblingIds: [],
-            spouseIds: [],
-            childrenIds: []
-        };
-        
-        // === FAMILLE PARENTALE (où l'individu est enfant) ===
-        const familiesAsChild = individualSelection.getFamilyAsChild().arraySelect();
-        if (familiesAsChild.length > 0) {
-            const parentFamily = familiesAsChild[0]; // Première famille parentale
-            
-            const father = parentFamily.getHusband();
-            if (father.length > 0) {
-                result.fatherId = father.value()[0];
-            }
-            
-            const mother = parentFamily.getWife();
-            if (mother.length > 0) {
-                result.motherId = mother.value()[0];
-            }
-            
-            // Frères et sœurs = autres enfants de la même famille
-            const allChildren = parentFamily.getChild().arraySelect();
-            result.siblingIds = allChildren
-                .map(child => child.value()[0])
-                .filter(childId => childId !== individualSelection.pointer()[0]);
-        }
-        
-        // === FAMILLES CONJUGALES (où l'individu est époux/épouse) ===
-        const familiesAsSpouse = individualSelection.getFamilyAsSpouse().arraySelect();
-        familiesAsSpouse.forEach(spouseFamily => {
-            const husband = spouseFamily.getHusband();
-            const wife = spouseFamily.getWife();
-            
-            // Identifier l'époux/épouse (l'autre personne de cette famille)
-            const husbandId = husband.length > 0 ? husband.value()[0] : null;
-            const wifeId = wife.length > 0 ? wife.value()[0] : null;
-            const currentId = individualSelection.pointer()[0];
-            
-            const spouseId = currentId === husbandId ? wifeId : husbandId;
-            if (spouseId && !result.spouseIds.includes(spouseId)) {
-                result.spouseIds.push(spouseId);
-            }
-            
-            // Enfants de cette famille
-            const children = spouseFamily.getChild().arraySelect();
-            children.forEach(child => {
-                const childId = child.value()[0];
-                if (!result.childrenIds.includes(childId)) {
-                    result.childrenIds.push(childId);
-                }
-            });
-        });
-        
-        return result;
+    _getMediaType(format, file) {
+        if (!format && !file) return 'other';
+        const f = (format || '').toLowerCase();
+        if (['jpg','jpeg','png','gif','tif','tiff','webp','bmp'].includes(f)) return 'image';
+        if (['mp4','mov','avi','mkv','webm'].includes(f)) return 'video';
+        if (['mp3','wav','flac','aac','ogg'].includes(f)) return 'audio';
+        if (['pdf'].includes(f)) return 'document';
+        if (file && (/^(https?|ftp):\/\//i).test(file)) return 'url';
+        return 'other';
     }
     
     /**
-     * Fusionne intelligemment les mariages avec le même conjoint
-     * Règle: fusion sauf si >10 ans d'écart ou divorce entre temps
+     * Notes d’un record média : inline + refs
      * @private
      */
-    _fuseMarriagesWithSameSpouse(marriages, individualSelection) {
-        // Trier les mariages par date
-        marriages.sort((a, b) => {
-            const dateA = this._parseGedcomDate(a.date);
-            const dateB = this._parseGedcomDate(b.date);
-            return dateA - dateB;
-        });
-        
-        // Vérifier s'il y a un divorce avec ce conjoint
-        const spouseId = marriages[0].spouseId;
-        const hasDivorce = this._hasDivorceWithSpouse(individualSelection, spouseId);
-        
-        // Calculer l'écart entre le premier et dernier mariage
-        const firstDate = this._parseGedcomDate(marriages[0].date);
-        const lastDate = this._parseGedcomDate(marriages[marriages.length - 1].date);
-        const yearsDiff = (lastDate - firstDate) / (365 * 24 * 60 * 60 * 1000);
-        
-        // Si plus de 10 ans d'écart OU divorce, garder séparés
-        if (yearsDiff > 10 || hasDivorce) {
-            console.log(`🔍 [DEBUG] Mariages avec ${spouseId} gardés séparés: ${yearsDiff.toFixed(1)} ans d'écart, divorce: ${hasDivorce}`);
-            return marriages;
-        }
-        
-        // Sinon, fusionner en un seul mariage avec cérémonies multiples
-        console.log(`🔍 [DEBUG] Fusion de ${marriages.length} mariages avec ${spouseId}`);
-        const fusedMarriage = {
-            type: 'marriage',
-            date: marriages[0].date,  // Date de la première cérémonie
-            place: marriages[0].fullPlace || marriages[0].place,
-            spouseId: spouseId,
-            ceremonies: marriages.map((m, index) => ({
-                // [NOUVEAU] Utiliser le ceremonyType extrait ou marriageType
-                type: m.ceremonyType || 
-                      (m.marriageType ? 
-                       (m.marriageType.toLowerCase().includes('religious') ? 'religious' : 'civil') :
-                       (index === 0 ? 'civil' : 'religious')), // Fallback: assume civil first
-                date: m.date,
-                place: m.fullPlace || m.place, // Préserver le lieu complet
-                // [NOUVEAU] Préserver la subdivision (Synagogue, Ecole, etc.)
-                subdivision: m.subdivision || null,
-                // [NOUVEAU] Préserver notes et sources si disponibles
-                notes: m.notes || null,
-                sources: m.sources || null
-            }))
-        };
-        
-        // [NOUVEAU] Conserver les notes et sources du premier mariage au niveau principal
-        if (marriages[0].notes) {
-            fusedMarriage.notes = marriages[0].notes;
-            fusedMarriage.noteIds = marriages[0].noteIds;
-        }
-        if (marriages[0].sources) {
-            fusedMarriage.sources = marriages[0].sources;
-        }
-        
-        return [fusedMarriage];
-    }
-    
-    /**
-     * Parse une date GEDCOM en Date JavaScript
-     * @private
-     */
-    _parseGedcomDate(dateStr) {
-        if (!dateStr) return new Date(0);
-        
-        // Format: "2 NOV 1956" ou "1956" ou "NOV 1956"
-        const months = {
-            'JAN': 0, 'FEB': 1, 'MAR': 2, 'APR': 3, 'MAY': 4, 'JUN': 5,
-            'JUL': 6, 'AUG': 7, 'SEP': 8, 'OCT': 9, 'NOV': 10, 'DEC': 11
-        };
-        
-        const parts = dateStr.split(' ');
-        let year = 1900, month = 0, day = 1;
-        
-        if (parts.length === 3) {
-            // "2 NOV 1956"
-            day = parseInt(parts[0]) || 1;
-            month = months[parts[1]] || 0;
-            year = parseInt(parts[2]) || 1900;
-        } else if (parts.length === 2) {
-            // "NOV 1956"
-            month = months[parts[0]] || 0;
-            year = parseInt(parts[1]) || 1900;
-        } else if (parts.length === 1) {
-            // "1956"
-            year = parseInt(parts[0]) || 1900;
-        }
-        
-        return new Date(year, month, day);
-    }
-    
-    /**
-     * Vérifie s'il y a un divorce avec un conjoint spécifique
-     * @private
-     */
-    _hasDivorceWithSpouse(individualSelection, spouseId) {
-        // Parcourir les familles pour chercher un divorce
-        const families = individualSelection.getFamilyAsSpouse().arraySelect();
-        for (const family of families) {
-            // Vérifier si cette famille a le bon conjoint
-            const husb = family.getHusband().pointer()[0];
-            const wife = family.getWife().pointer()[0];
-            const individualPointer = individualSelection.pointer()[0];
-            const otherSpouse = (husb === individualPointer) ? wife : husb;
-            
-            if (otherSpouse === spouseId) {
-                // Vérifier s'il y a un divorce dans cette famille
-                const divorceEvents = family.getEventDivorce().arraySelect();
-                if (divorceEvents.length > 0) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-    
-    /**
-     * Extraction optimisée des événements familiaux avec métadonnées
-     * @private  
-     */
-    _extractFamilyEventsOptimized(individualSelection, familyRelations) {
-        const events = [];
-        
-        // === ÉVÉNEMENTS DE MARIAGE ===
-        const familiesAsSpouse = individualSelection.getFamilyAsSpouse().arraySelect();
-        const marriagesBySpouse = new Map(); // Pour grouper les mariages par conjoint
-        
-        familiesAsSpouse.forEach((spouseFamily, index) => {
-            const marriageEvents = spouseFamily.getEventMarriage().arraySelect();
-            const spouseId = familyRelations.spouseIds[index] || null;
-            
-            marriageEvents.forEach(marriageEvent => {
-                const marriageDate = marriageEvent.getDate();
-                const marriagePlace = marriageEvent.getPlace();
-                
-                if (marriageDate.length > 0) {
-                    const marriage = {
-                        type: 'marriage',
-                        date: marriageDate.value()[0],
-                        place: marriagePlace.length > 0 ? marriagePlace.value()[0] : null,
-                        spouseId: spouseId
-                    };
-                    
-                    // [NOUVEAU] Parser le lieu avec subdivision si disponible
-                    if (marriagePlace.length > 0) {
-                        const placeString = marriagePlace.value()[0];
-                        const placeData = parsePlaceWithSubdivision(placeString);
-                        
-                        marriage.place = placeData.normalizedPlace || placeString;
-                        marriage.fullPlace = placeData.fullPlace;
-                        if (placeData.subdivision) {
-                            marriage.subdivision = placeData.subdivision;
-                        }
-                    }
-                    
-                    // [NOUVEAU] Extraire le TYPE du mariage via l'API read-gedcom
-                    try {
-                        const marriageType = marriageEvent.getType();
-                        if (marriageType && marriageType.length > 0) {
-                            const typeValue = marriageType.value()[0];
-                            if (typeValue) {
-                                marriage.marriageType = typeValue;
-                                // Utiliser le TYPE pour déterminer civil/religieux
-                                if (typeValue.toLowerCase().includes('religious')) {
-                                    marriage.ceremonyType = 'religious';
-                                } else if (typeValue.toLowerCase().includes('civil')) {
-                                    marriage.ceremonyType = 'civil';
-                                }
-                            }
-                        }
-                    } catch (error) {
-                        // getType() peut ne pas exister sur certains événements
-                        // this._log(`⚠️ Pas de TYPE pour ce mariage: ${error.message}`);
-                    }
-                    
-                    // [NOUVEAU] Préserver le lieu complet sans normalisation prématurée
-                    if (marriagePlace.length > 0) {
-                        const fullPlace = marriagePlace.value()[0];
-                        marriage.fullPlace = fullPlace; // Lieu complet pour préservation
-                        marriage.place = fullPlace; // Pour compatibilité existing
-                    }
-                    
-                    // [NOUVEAU] Extraire les notes du mariage
-                    try {
-                        const marriageNotes = marriageEvent.getNote();
-                        if (marriageNotes && marriageNotes.length > 0) {
-                            marriage.notes = this._extractEventNotes(marriageEvent);
-                            if (marriage.notes.length > 0) {
-                                marriage.noteIds = marriage.notes.map(n => n.id || n.pointer).filter(Boolean);
-                            }
-                        }
-                    } catch (error) {
-                        // getNote() peut échouer sur certains événements
-                    }
-                    
-                    // [NOUVEAU] Extraire les sources
-                    try {
-                        const marriageSources = marriageEvent.get('SOUR');
-                        if (marriageSources && marriageSources.length > 0) {
-                            marriage.sources = marriageSources.arraySelect().map(source => ({
-                                pointer: source.pointer() ? source.pointer()[0] : null
-                            })).filter(s => s.pointer);
-                        }
-                    } catch (error) {
-                        // Sources optionnelles
-                    }
-                    
-                    // Grouper les mariages par conjoint
-                    if (!marriagesBySpouse.has(spouseId)) {
-                        marriagesBySpouse.set(spouseId, []);
-                    }
-                    marriagesBySpouse.get(spouseId).push(marriage);
-                }
-            });
-        });
-        
-        // Traiter les mariages groupés par conjoint
-        marriagesBySpouse.forEach((marriages, spouseId) => {
-            if (marriages.length === 1) {
-                // Un seul mariage avec ce conjoint
-                events.push(marriages[0]);
-            } else {
-                // Plusieurs mariages avec le même conjoint - appliquer la règle de fusion
-                const fusedMarriages = this._fuseMarriagesWithSameSpouse(marriages, individualSelection);
-                events.push(...fusedMarriages);
-            }
-        });
-        
-        // === ÉVÉNEMENTS NAISSANCE D'ENFANTS ===
-        familyRelations.childrenIds.forEach(childId => {
-            // On ne peut pas récupérer facilement la date de naissance de l'enfant
-            // sans accéder à l'individu enfant. Ceci sera traité dans la phase suivante.
-            events.push({
-                type: 'child-birth',
-                childId: childId,
-                date: null // À enrichir plus tard si nécessaire
-            });
-        });
-        
-        return events;
-    }
-    
-    _extractAdoptionDetails(familySelection) { return null; }
-    
-    /**
-     * 🆕 NOUVEAU: Configure le format PLAC pour l'extraction des subdivisions
-     * @private
-     */
-    _configurePlacFormat(rootSelection) {
+    _extractMediaNotes(mediaRecord) {
+        const notes = [];
         try {
-            // Chercher l'en-tête HEAD puis PLAC
-            const headSelection = rootSelection.getHeader();
-            if (headSelection && headSelection.length > 0) {
-                const placSelection = headSelection.get('PLAC');
-                if (placSelection && placSelection.length > 0) {
-                    const formSelection = placSelection.get('FORM');
-                    if (formSelection && formSelection.length > 0) {
-                        const placForm = formSelection.value()[0];
-                        if (placForm) {
-                            this._log(`Format PLAC détecté: "${placForm}"`);
-                            setPlacFormat(placForm);
-                            return;
-                        }
+            const mixed = mediaRecord.getNote && mediaRecord.getNote();
+            if (mixed && mixed.length > 0) {
+                mixed.arraySelect().forEach(n => {
+                    const raw = (n.value && n.value()[0]) || '';
+                    if (raw && raw.startsWith('@')) {
+                        notes.push({ type: 'reference', pointer: raw });
+                    } else {
+                        const text = this._extractNoteText(n);
+                        if (text) notes.push({ type: 'embedded', text });
                     }
-                }
+                });
             }
-            
-            // Fallback: format standard GEDCOM si pas trouvé
-            this._log('Format PLAC standard utilisé (pas d\'en-tête PLAC trouvé)');
-            setPlacFormat('Town, Area code, County, Region, Country, Subdivision');
-            
+            const noteSelection = mediaRecord.get('NOTE');
+            if (noteSelection && noteSelection.length > 0) {
+                noteSelection.arraySelect().forEach(n => {
+                    const raw = (n.value && n.value()[0]) || '';
+                    if (raw && raw.startsWith('@')) {
+                        if (!notes.some(x => x.type === 'reference' && x.pointer === raw)) {
+                            notes.push({ type: 'reference', pointer: raw });
+                        }
+                    } else {
+                        const text = this._extractNoteText(n);
+                        if (text) notes.push({ type: 'embedded', text });
+                    }
+                });
+            }
         } catch (error) {
-            this._log(`⚠️ Erreur configuration PLAC: ${error.message}`);
-            // Utiliser format standard par défaut
-            setPlacFormat('Town, Area code, County, Region, Country, Subdivision');
+            this._log(`⚠️ Erreur extraction notes média: ${error.message}`);
         }
+        return notes;
+    }
+    
+    /**
+     * Sources d’un record média
+     * @private
+     */
+    _extractMediaSources(mediaRecord) {
+        const sources = [];
+        try {
+            const sourceSelection = mediaRecord.get('SOUR');
+            if (sourceSelection && sourceSelection.length > 0) {
+                sourceSelection.arraySelect().forEach(source => {
+                    const ptr = source.value()[0];
+                    if (ptr) sources.push({ pointer: ptr });
+                });
+            }
+        } catch (error) {
+            this._log(`⚠️ Erreur extraction sources média: ${error.message}`);
+        }
+        return sources;
+    }
+    
+    _hasMediaBlob(_mediaRecord) { return false; }
+    
+    _extractMetadata(rootSelection) { 
+        const meta = {};
+        if (this._placForm) meta.placForm = this._placForm;
+        // TODO: ajouter d'autres métadonnées si besoin (source, date d'export, etc.)
+        return meta; 
     }
 }
