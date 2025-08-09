@@ -368,6 +368,7 @@ export class EventExtractor {
             value: placeData.normalizedPlace || placeValue, // Lieu normalisé
             fullPlace: placeData.fullPlace, // Lieu complet original
             subdivision: placeData.subdivision || null, // Subdivision (Synagogue, École, etc.)
+            isInformativeSubdivision: placeData.isInformativeSubdivision || false, // Flag validation géographique
             // Propriétés temporaires pour transport vers familyTownsStore
             _tempLatitude: null,
             _tempLongitude: null

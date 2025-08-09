@@ -56,10 +56,12 @@ export class CacheBuilder {
             const repositoriesCache = await this._buildRepositoriesCache(enrichedData.repositories);
             
             // ÉTAPE 2: Phase de référencement croisé - AVANT compression !
+            // CRITIQUE: Les noteIds des subdivisions doivent être créés AVANT la compression des événements
             this._log('Référencement croisé notes/médias ↔ individus (AVANT compression)...');
             this._crossReferenceNotesAndMedia(enrichedData.individuals, notesCache, mediaCache);
             
             // ÉTAPE 3: Construction du cache individus APRÈS cross-reference 
+            // Les noteIds des subdivisions sont maintenant disponibles pour la compression
             this._log('Construction du cache des individus optimisé (APRÈS cross-reference)...');
             const individualsCache = await this._buildOptimizedIndividualsCache(enrichedData.individuals);
             
