@@ -786,20 +786,37 @@ export class CacheBuilder {
             }
         }
         
-        // Phase 2 : Générer familyTownsStore avec coordonnées centralisées
+        // Phase 2 : Générer familyTownsStore avec enrichissement progressif
         for (const [key, data] of placesData) {
-            // Extraire les composants géographiques
-            const firstSample = Array.from(data.samples)[0] || '';
-            const components = await extractPlaceComponents(firstSample);
+            // Enrichissement progressif : analyser tous les samples pour cumul d'informations
+            let bestComponents = {
+                town: null,
+                postalCode: null,
+                department: null,
+                region: null,
+                country: null
+            };
+            
+            // Analyser chaque sample et enrichir au fur et à mesure
+            for (const sample of Array.from(data.samples)) {
+                const components = await extractPlaceComponents(sample);
+                
+                // Enrichir avec les données les plus complètes
+                if (components.town && !bestComponents.town) bestComponents.town = components.town;
+                if (components.postalCode && !bestComponents.postalCode) bestComponents.postalCode = components.postalCode;
+                if (components.department && !bestComponents.department) bestComponents.department = components.department;
+                if (components.region && !bestComponents.region) bestComponents.region = components.region;
+                if (components.country && !bestComponents.country) bestComponents.country = components.country;
+            }
             
             // Construire townDisplay avec contexte
-            const townName = components.town || key;
+            const townName = bestComponents.town || key;
             let townDisplay = townName;
             
-            if (components.department) {
-                townDisplay = `${townName} (${components.department})`;
-            } else if (components.country && components.country !== 'France') {
-                townDisplay = `${townName} (${components.country})`;
+            if (bestComponents.department) {
+                townDisplay = `${townName} (${bestComponents.department})`;
+            } else if (bestComponents.country && bestComponents.country !== 'France') {
+                townDisplay = `${townName} (${bestComponents.country})`;
             }
             
             // Créer l'entrée avec coordonnées SI disponibles
@@ -809,8 +826,8 @@ export class CacheBuilder {
                 // Coordonnées natives du GEDCOM (une seule fois par lieu !)
                 latitude: data.latitude !== null ? String(data.latitude) : "",
                 longitude: data.longitude !== null ? String(data.longitude) : "",
-                departement: components.department || "",
-                country: components.country || "",
+                departement: bestComponents.department || "",
+                country: bestComponents.country || "",
                 departementColor: "",                  // Sera enrichi par geneafan
                 countryColor: "",                      // Sera enrichi par geneafan
                 _samples: Array.from(data.samples).slice(0, 3)
