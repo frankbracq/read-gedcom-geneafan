@@ -280,7 +280,8 @@ export class CacheBuilder {
         if (event.place) {
             // Si place est un objet temporaire avec coordonnées ET subdivision
             if (typeof event.place === 'object' && event.place.value) {
-                compressed.l = await this._normalizePlace(event.place.value);
+                const normalizedPlace = await this._normalizePlace(event.place.value);
+                compressed.l = this._isUnknownPlace(normalizedPlace) ? null : normalizedPlace;
                 // [NOUVEAU] Extraire la subdivision si présente
                 if (event.place.subdivision) {
                     // Stocker dans les métadonnées (sera ajouté plus bas)
@@ -291,7 +292,8 @@ export class CacheBuilder {
             } 
             // Fallback si place est une string (rétrocompatibilité)
             else if (typeof event.place === 'string') {
-                compressed.l = await this._normalizePlace(event.place);
+                const normalizedPlace = await this._normalizePlace(event.place);
+                compressed.l = this._isUnknownPlace(normalizedPlace) ? null : normalizedPlace;
             }
         }
         
@@ -328,10 +330,16 @@ export class CacheBuilder {
         // [NOUVEAU] Ajouter les cérémonies multiples pour les mariages fusionnés
         if (event.ceremonies && event.ceremonies.length > 0) {
             metadata.ceremonies = await Promise.all(event.ceremonies.map(async c => {
+                let normalizedCeremonyPlace = undefined;
+                if (c.place) {
+                    const tempPlace = await this._normalizePlace(c.place);
+                    normalizedCeremonyPlace = this._isUnknownPlace(tempPlace) ? undefined : tempPlace;
+                }
+                
                 const ceremony = {
                     t: c.type === 'civil' ? 'c' : 'r',  // c=civil, r=religious
                     d: this._compressDate(c.date),
-                    l: c.place ? await this._normalizePlace(c.place) : undefined
+                    l: normalizedCeremonyPlace
                 };
                 
                 // [SUPPRIMÉ] marriageType redondant avec t: "r"/"c"
@@ -406,6 +414,47 @@ export class CacheBuilder {
         
         // Utilise le module geoUtils avec parsePlaceParts de read-gedcom
         return normalizePlace(place);
+    }
+    
+    /**
+     * 🚫 Vérifie si un lieu normalisé est indéterminé/inutile
+     * @param {string} normalizedPlace - Lieu normalisé
+     * @returns {boolean} True si le lieu doit être exclu
+     * @private
+     */
+    _isUnknownPlace(normalizedPlace) {
+        if (!normalizedPlace || typeof normalizedPlace !== 'string') {
+            return true;
+        }
+        
+        const lowercasePlace = normalizedPlace.toLowerCase().trim();
+        
+        // Liste des patterns de lieux indéterminés à exclure
+        const unknownPatterns = [
+            '?',           // Point d'interrogation simple
+            'unknown',     // "Unknown" en anglais
+            'inconnu',     // "Inconnu" en français  
+            'inconnue',    // "Inconnue" en français
+            'n/a',         // "Not Available"
+            'na',          // "N/A" sans slash
+            '',            // Chaîne vide
+            ' ',           // Espace seul
+            '???',         // Multiples points d'interrogation
+            'lieu inconnu', // "Lieu inconnu" en français
+            'unknown place' // "Unknown place" en anglais
+        ];
+        
+        // Vérification exacte
+        if (unknownPatterns.includes(lowercasePlace)) {
+            return true;
+        }
+        
+        // Pattern plus avancé : uniquement des caractères non-alphabétiques
+        if (/^[^a-zA-ZÀ-ÿ]+$/.test(lowercasePlace)) {
+            return true; // Exclure "??", "---", "...", etc.
+        }
+        
+        return false;
     }
     
     /**
@@ -749,7 +798,8 @@ export class CacheBuilder {
                             
                             const normalizedKey = await this._normalizePlace(placeValue);
                             
-                            if (normalizedKey) {
+                            // 🚫 Exclure les lieux indéterminés/inutiles
+                            if (normalizedKey && !this._isUnknownPlace(normalizedKey)) {
                                 // Initialiser l'entrée si première fois
                                 if (!placesData.has(normalizedKey)) {
                                     placesData.set(normalizedKey, {
