@@ -458,7 +458,7 @@ export class EventExtractor {
                             if (coordsParsed.latitude && coordsParsed.longitude) {
                                 enrichedPlaceData._tempLatitude = coordsParsed.latitude;
                                 enrichedPlaceData._tempLongitude = coordsParsed.longitude;
-                                this.log(`Coordonnées getCoordinates() pour "${placeValue}": ${coordsParsed.latitude}, ${coordsParsed.longitude}`);
+                                // this.log(`Coordonnées getCoordinates() pour "${placeValue}": ${coordsParsed.latitude}, ${coordsParsed.longitude}`);
                             }
                         }
                     }
@@ -470,7 +470,7 @@ export class EventExtractor {
                     if (coords.latitude && coords.longitude) {
                         enrichedPlaceData._tempLatitude = coords.latitude;
                         enrichedPlaceData._tempLongitude = coords.longitude;
-                        this.log(`Coordonnées MAP pour "${placeValue}": ${coords.latitude}, ${coords.longitude}`);
+                        // this.log(`Coordonnées MAP pour "${placeValue}": ${coords.latitude}, ${coords.longitude}`);
                     }
                 }
                 
