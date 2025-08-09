@@ -306,6 +306,66 @@ export class EventExtractor {
                         // Sources optionnelles
                     }
                     
+                    // 🆕 Extraire les associations/témoins (ASSO)
+                    try {
+                        const assoSelection = marriageEvent.get('ASSO');
+                        if (assoSelection && assoSelection.length > 0) {
+                            marriage.witnesses = assoSelection.arraySelect().map(asso => {
+                                const witnessData = {
+                                    pointer: asso.value()[0] || null, // Pointeur vers l'individu témoin
+                                    type: null,
+                                    role: null,
+                                    relationship: null,
+                                    note: null
+                                };
+                                
+                                // Extraire TYPE
+                                try {
+                                    const typeSelection = asso.get('TYPE');
+                                    if (typeSelection && typeSelection.length > 0) {
+                                        witnessData.type = typeSelection.value()[0];
+                                    }
+                                } catch (e) { /* Ignore */ }
+                                
+                                // Extraire ROLE
+                                try {
+                                    const roleSelection = asso.get('ROLE');
+                                    if (roleSelection && roleSelection.length > 0) {
+                                        witnessData.role = roleSelection.value()[0];
+                                    }
+                                } catch (e) { /* Ignore */ }
+                                
+                                // Extraire RELA (relationship)
+                                try {
+                                    const relaSelection = asso.get('RELA');
+                                    if (relaSelection && relaSelection.length > 0) {
+                                        witnessData.relationship = relaSelection.value()[0];
+                                    }
+                                } catch (e) { /* Ignore */ }
+                                
+                                // Extraire NOTE spécifique au témoin
+                                try {
+                                    const noteSelection = asso.get('NOTE');
+                                    if (noteSelection && noteSelection.length > 0) {
+                                        const noteText = this.extractNoteText(noteSelection.arraySelect()[0]);
+                                        if (noteText) {
+                                            witnessData.note = noteText;
+                                        }
+                                    }
+                                } catch (e) { /* Ignore */ }
+                                
+                                return witnessData;
+                            }).filter(w => w.pointer); // Garder uniquement les témoins avec pointeur valide
+                            
+                            if (marriage.witnesses.length > 0) {
+                                this.log(`Témoins extraits pour mariage: ${marriage.witnesses.length} témoins`);
+                            }
+                        }
+                    } catch (error) {
+                        // ASSO optionnel
+                        this.log(`Erreur extraction ASSO: ${error.message}`);
+                    }
+                    
                     // Grouper les mariages par conjoint
                     if (!marriagesBySpouse.has(spouseId)) {
                         marriagesBySpouse.set(spouseId, []);

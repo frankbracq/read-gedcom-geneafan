@@ -160,6 +160,46 @@ export class FamilyExtractor {
                 multimedia: this.options.extractMedia ? this.extractEventMultimedia(event) : []
             };
             
+            // 🆕 Extraire les associations/témoins (ASSO) pour événements familiaux
+            if (baseType === 'marriage' || baseType === 'engagement') {
+                try {
+                    const assoSelection = event.get('ASSO');
+                    if (assoSelection && assoSelection.length > 0) {
+                        eventData.witnesses = assoSelection.arraySelect().map(asso => {
+                            const witnessData = {
+                                pointer: asso.value()[0] || null,
+                                type: null,
+                                role: null,
+                                relationship: null,
+                                note: null
+                            };
+                            
+                            // Extraire TYPE, ROLE, RELA, NOTE
+                            ['TYPE', 'ROLE', 'RELA'].forEach(field => {
+                                try {
+                                    const selection = asso.get(field);
+                                    if (selection && selection.length > 0) {
+                                        witnessData[field.toLowerCase()] = selection.value()[0];
+                                    }
+                                } catch (e) { /* Ignore */ }
+                            });
+                            
+                            // NOTE spécifique
+                            try {
+                                const noteSelection = asso.get('NOTE');
+                                if (noteSelection && noteSelection.length > 0) {
+                                    witnessData.note = noteSelection.value()[0];
+                                }
+                            } catch (e) { /* Ignore */ }
+                            
+                            return witnessData;
+                        }).filter(w => w.pointer);
+                    }
+                } catch (error) {
+                    // ASSO optionnel
+                }
+            }
+            
             events.push(eventData);
         }
         
