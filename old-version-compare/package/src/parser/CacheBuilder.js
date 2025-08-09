@@ -42,7 +42,14 @@ export class CacheBuilder {
             // Réinitialiser stats
             this.stats = { processed: 0, skipped: 0, errors: 0, compressionRatio: 0 };
             
-            // ÉTAPE 1: Construction des caches de base (AVANT compression des individus)
+            // Construction DIRECTE du cache individus avec format GeneaFan compressé
+            this._log('Construction du cache des individus optimisé...');
+            const individualsCache = await this._buildOptimizedIndividualsCache(enrichedData.individuals);
+            
+            // Les familles ne sont plus nécessaires (relations intégrées dans individus)
+            this._log('Construction du cache des familles...');
+            const familiesCache = new Map(); // VIDE car relations dans individualsCache
+            
             this._log('Construction du cache des sources...');
             const sourcesCache = await this._buildSourcesCache(enrichedData.sources);
             
@@ -55,21 +62,9 @@ export class CacheBuilder {
             this._log('Construction du cache des dépôts...');
             const repositoriesCache = await this._buildRepositoriesCache(enrichedData.repositories);
             
-            // ÉTAPE 2: Phase de référencement croisé - AVANT compression !
-            this._log('Référencement croisé notes/médias ↔ individus (AVANT compression)...');
+            // Phase de référencement croisé : lier les notes/médias aux individus
+            this._log('Référencement croisé notes/médias ↔ individus...');
             this._crossReferenceNotesAndMedia(enrichedData.individuals, notesCache, mediaCache);
-            
-            // ÉTAPE 3: Construction du cache individus APRÈS cross-reference 
-            this._log('Construction du cache des individus optimisé (APRÈS cross-reference)...');
-            const individualsCache = await this._buildOptimizedIndividualsCache(enrichedData.individuals);
-            
-            // Les familles ne sont plus nécessaires (relations intégrées dans individus)
-            this._log('Construction du cache des familles...');
-            const familiesCache = new Map(); // VIDE car relations dans individualsCache
-            
-            // Ajouter les références aux notes dans individualsCache APRÈS le cross-reference
-            this._log('Ajout des références de notes dans individualsCache...');
-            this._addNotesReferencesToIndividuals(enrichedData.individuals, individualsCache, notesCache);
             
             // Générer familyTownsStore de base (données extraites sans enrichissement)
             const familyTownsStore = this.options.extractPlaces ? 
@@ -188,15 +183,14 @@ export class CacheBuilder {
         const result = {};
         
         // Phase 12/13: Compression name/surname (fn = "surname|name")
-        if (individual.name) {
-            const surname = individual.name.surname || '';
-            const given = individual.name.given || '';
-            result.fn = `${surname}|${given}`;
+        if (individual.name || individual.surname) {
+            result.fn = `${individual.surname || ''}|${individual.name || ''}`;
         }
         
         // Phase 14: Compression gender (M/F/U)
         if (individual.sex) {
-            result.g = individual.sex; // Déjà au format M/F/U depuis IndividualExtractor
+            result.g = individual.sex === 'male' ? 'M' : 
+                      individual.sex === 'female' ? 'F' : 'U';
         }
         
         // === RELATIONS DIRECTES (pré-extraites par DataExtractor) ===
@@ -221,10 +215,6 @@ export class CacheBuilder {
         if (individual.events && individual.events.length > 0) {
             result.e = await this._compressEventsToGeneaFanFormat(individual.events);
         }
-        
-        // === NOTES (références uniquement) ===
-        // Les références aux notes seront ajoutées APRÈS _crossReferenceNotesAndMedia
-        // via _addNotesReferencesToIndividuals()
         
         // === QUALITÉ ===
         if (this.options.calculateQuality) {
@@ -544,38 +534,7 @@ export class CacheBuilder {
         for (const individual of individualsData) {
             if (!individual.pointer) continue;
             
-            // Traiter les références aux notes (nouvelle structure: individual.notes.refs)
-            if (individual.notes && individual.notes.refs && Array.isArray(individual.notes.refs)) {
-                for (const noteRef of individual.notes.refs) {
-                    const note = notesCache.get(noteRef);
-                    if (note) {
-                        if (!note.individuals) note.individuals = [];
-                        if (!note.individuals.includes(individual.pointer)) {
-                            note.individuals.push(individual.pointer);
-                            noteLinks++;
-                        }
-                    }
-                }
-            }
-            
-            // Traiter les notes inline (nouvelle structure: individual.notes.inline)
-            if (individual.notes && individual.notes.inline && Array.isArray(individual.notes.inline)) {
-                for (const inlineNote of individual.notes.inline) {
-                    // Ajouter la note inline au cache des notes
-                    if (!notesCache.has(inlineNote.id)) {
-                        notesCache.set(inlineNote.id, {
-                            text: inlineNote.text,
-                            type: inlineNote.type || 'individual',
-                            date: null,
-                            author: null,
-                            individuals: [individual.pointer]
-                        });
-                        noteLinks++;
-                    }
-                }
-            }
-            
-            // Compatibilité avec l'ancienne structure (au cas où)
+            // Traiter les références aux notes
             if (individual.noteRefs && Array.isArray(individual.noteRefs)) {
                 for (const noteRef of individual.noteRefs) {
                     const note = notesCache.get(noteRef);
@@ -589,8 +548,10 @@ export class CacheBuilder {
                 }
             }
             
+            // Traiter les notes inline
             if (individual.inlineNotes && Array.isArray(individual.inlineNotes)) {
                 for (const inlineNote of individual.inlineNotes) {
+                    // Ajouter la note inline au cache des notes
                     if (!notesCache.has(inlineNote.id)) {
                         notesCache.set(inlineNote.id, {
                             text: inlineNote.text,
@@ -625,7 +586,6 @@ export class CacheBuilder {
                     if (event.notes && Array.isArray(event.notes)) {
                         for (const noteData of event.notes) {
                             if (noteData.pointer) {
-                                // Notes avec références externes
                                 const note = notesCache.get(noteData.pointer);
                                 if (note) {
                                     if (!note.individuals) note.individuals = [];
@@ -633,25 +593,6 @@ export class CacheBuilder {
                                         note.individuals.push(individual.pointer);
                                         noteLinks++;
                                     }
-                                }
-                            } else if (noteData.type === 'embedded' && noteData.text) {
-                                // Notes inline dans les événements
-                                const eventNoteId = `INLINE_EVENT_${individual.pointer}_${event.type}_${noteLinks}`;
-                                if (!notesCache.has(eventNoteId)) {
-                                    notesCache.set(eventNoteId, {
-                                        text: noteData.text,
-                                        type: 'event',
-                                        date: null,
-                                        author: null,
-                                        individuals: [individual.pointer],
-                                        eventType: event.type,
-                                        customType: event.customType || null
-                                    });
-                                    noteLinks++;
-                                    
-                                    // Créer noteIds dans l'événement pour la compression
-                                    if (!event.noteIds) event.noteIds = [];
-                                    event.noteIds.push(eventNoteId);
                                 }
                             }
                         }
@@ -677,42 +618,6 @@ export class CacheBuilder {
         }
         
         this._log(`   ✅ Référencement croisé: ${noteLinks} liens notes, ${mediaLinks} liens médias`);
-    }
-    
-    /**
-     * Ajoute les références aux notes dans le cache des individus
-     * @private
-     */
-    _addNotesReferencesToIndividuals(individualsData, individualsCache, notesCache) {
-        if (!Array.isArray(individualsData)) return;
-        
-        let referencesAdded = 0;
-        
-        for (const individual of individualsData) {
-            if (!individual.pointer) continue;
-            
-            const cachedIndividual = individualsCache.get(individual.pointer);
-            if (!cachedIndividual) continue;
-            
-            // Collecter les IDs de notes inline pour cet individu
-            const noteIds = [];
-            
-            if (individual.notes && individual.notes.inline && Array.isArray(individual.notes.inline)) {
-                for (const inlineNote of individual.notes.inline) {
-                    if (inlineNote.id && notesCache.has(inlineNote.id)) {
-                        noteIds.push(inlineNote.id);
-                    }
-                }
-            }
-            
-            // Ajouter les références dans le cache de l'individu
-            if (noteIds.length > 0) {
-                cachedIndividual.n = noteIds;
-                referencesAdded++;
-            }
-        }
-        
-        this._log(`   ✅ ${referencesAdded} individus mis à jour avec références de notes`);
     }
     
     /**

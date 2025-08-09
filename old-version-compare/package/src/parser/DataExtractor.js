@@ -129,7 +129,6 @@ export class DataExtractor {
         const mediaRefs = this._extractIndividualMediaRefs(individualSelection);
         
         // [NOUVEAU] Collecter toutes les notes des événements
-        console.log(`🔍 [DEBUG] Collecte des notes d'événements pour ${pointer}`);
         const eventNotes = [];
         let eventNoteCounter = 0;
         
@@ -150,12 +149,10 @@ export class DataExtractor {
                         };
                         eventNotes.push(eventInlineNote);
                         eventNoteIds.push(noteId);  // Ajouter l'ID à la liste
-                        console.log(`🔍 [DEBUG] Note d'événement trouvée: ${event.type} - "${noteData.text.substring(0, 50)}..."`);
                     } else if (noteData.type === 'reference' && noteData.pointer) {
                         // Ajouter la référence aux noteRefs si pas déjà présente
                         if (!notesData.refs.includes(noteData.pointer)) {
                             notesData.refs.push(noteData.pointer);
-                            console.log(`🔍 [DEBUG] Référence de note d'événement: ${noteData.pointer}`);
                         }
                         eventNoteIds.push(noteData.pointer);  // Ajouter la référence à la liste
                     }
@@ -164,14 +161,12 @@ export class DataExtractor {
                 // Ajouter les IDs de notes à l'événement pour la compression
                 if (eventNoteIds.length > 0) {
                     event.noteIds = eventNoteIds;
-                    console.log(`🔍 [DEBUG] Événement ${event.type} enrichi avec ${eventNoteIds.length} note(s): ${eventNoteIds.join(', ')}`);
                 }
             }
         });
         
         // Fusionner les notes d'événements avec les notes individuelles
         const allInlineNotes = [...notesData.inline, ...eventNotes];
-        console.log(`🔍 [DEBUG] TOTAL notes pour ${pointer}: ${notesData.refs.length} refs + ${allInlineNotes.length} inline (${notesData.inline.length} individuelles + ${eventNotes.length} événements)`);
         
         // === FORMAT GENEAFAN OPTIMISÉ ===
         const result = {
@@ -286,15 +281,12 @@ export class DataExtractor {
         
         // Événements génériques/customs via getEventOther
         const otherEvents = individualSelection.getEventOther();
-        console.log(`🔍 [DEBUG] getEventOther() pour ${pointer}: ${otherEvents.length} événements customs`);
         const customEvents = this._extractEventDetails(otherEvents, 'custom');
-        console.log(`🔍 [DEBUG] Événements customs extraits:`, customEvents.map(e => `${e.type}:${e.customType}`));
         events.push(...customEvents);
         
         // 🚀 NOUVEAUX ATTRIBUTS COMME ÉVÉNEMENTS 
         // Extraire les attributs et les traiter comme des événements
         const attributes = this._extractAllAttributes(individualSelection);
-        console.log(`🔍 [DEBUG] Attributs extraits pour ${pointer}:`, attributes.map(a => `${a.type}:${a.value}`));
         events.push(...attributes);
         
         return events.filter(event => event !== null);
@@ -861,26 +853,21 @@ export class DataExtractor {
         const pointer = individualSelection.pointer()[0];
         
         try {
-            console.log(`🔍 [DEBUG] Extraction notes pour ${pointer}`);
             
             // Notes au niveau individu (NOTE directes)
             const noteSelection = individualSelection.getNote();
-            console.log(`🔍 [DEBUG] getNote() length: ${noteSelection.length}`);
             
             if (noteSelection.length > 0) {
                 noteSelection.arraySelect().forEach((note, index) => {
                     const noteValue = note.value()[0];
-                    console.log(`🔍 [DEBUG] Note ${index}: "${noteValue}"`);
                     if (!noteValue) return;
                     
                     if (noteValue.startsWith('@')) {
                         // C'est une référence vers une note externe
                         noteRefs.push(noteValue);
-                        console.log(`🔍 [DEBUG] → Référence note: ${noteValue}`);
                     } else {
                         // C'est une note inline avec son texte complet
                         const fullText = this._extractNoteText(note);
-                        console.log(`🔍 [DEBUG] → Note inline: "${fullText?.substring(0, 50)}..."`);
                         if (fullText) {
                             inlineNotes.push({
                                 text: fullText,
@@ -896,7 +883,6 @@ export class DataExtractor {
             this._log(`⚠️ Erreur extraction notes individu: ${error.message}`);
         }
         
-        console.log(`🔍 [DEBUG] RÉSULTAT pour ${pointer}: ${noteRefs.length} refs, ${inlineNotes.length} inline`);
         
         if (inlineNotes.length > 0) {
             this._log(`   📝 ${inlineNotes.length} notes inline trouvées pour ${pointer}`);
@@ -1169,26 +1155,21 @@ export class DataExtractor {
         const notes = [];
         
         try {
-            console.log(`🔍 [DEBUG EVENT NOTES] Extraction notes pour événement`);
             
             // Méthode 1: Utiliser getNote() si disponible
             if (typeof eventSelection.getNote === 'function') {
                 const noteSelection = eventSelection.getNote();
-                console.log(`🔍 [DEBUG EVENT NOTES] getNote() length: ${noteSelection.length}`);
                 
                 if (noteSelection.length > 0) {
                     noteSelection.arraySelect().forEach((note, index) => {
                         const noteValue = note.value()[0];
-                        console.log(`🔍 [DEBUG EVENT NOTES] Note ${index}: "${noteValue}"`);
                         
                         if (noteValue && noteValue.startsWith('@')) {
                             // Référence vers une note externe
                             notes.push({ type: 'reference', pointer: noteValue });
-                            console.log(`🔍 [DEBUG EVENT NOTES] → Référence: ${noteValue}`);
                         } else {
                             // Note inline - utiliser _extractNoteText pour gérer CONT/CONC
                             const fullText = this._extractNoteText(note);
-                            console.log(`🔍 [DEBUG EVENT NOTES] → Inline: "${fullText?.substring(0, 50)}..."`);
                             if (fullText) {
                                 notes.push({ type: 'embedded', text: fullText });
                             }
@@ -1200,9 +1181,7 @@ export class DataExtractor {
             this._log(`⚠️ Erreur extraction notes événement: ${error.message}`);
         }
         
-        console.log(`🔍 [DEBUG EVENT NOTES] RÉSULTAT: ${notes.length} notes trouvées`);
         if (notes.length > 0) {
-            console.log(`🔍 [DEBUG EVENT NOTES] Notes:`, notes.map(n => `${n.type}: ${n.text?.substring(0, 30) || n.pointer}...`));
         }
         
         return notes;
@@ -1275,7 +1254,6 @@ export class DataExtractor {
             const typeSelection = eventSelection.get('TYPE');
             if (typeSelection && typeSelection.length > 0) {
                 const typeValue = typeSelection.value()[0];
-                console.log(`🔍 [DEBUG] Custom event TYPE: "${typeValue}"`);
                 return typeValue || null;
             }
         } catch (error) {
@@ -1404,12 +1382,10 @@ export class DataExtractor {
         
         // Si plus de 10 ans d'écart OU divorce, garder séparés
         if (yearsDiff > 10 || hasDivorce) {
-            console.log(`🔍 [DEBUG] Mariages avec ${spouseId} gardés séparés: ${yearsDiff.toFixed(1)} ans d'écart, divorce: ${hasDivorce}`);
             return marriages;
         }
         
         // Sinon, fusionner en un seul mariage avec cérémonies multiples
-        console.log(`🔍 [DEBUG] Fusion de ${marriages.length} mariages avec ${spouseId}`);
         const fusedMarriage = {
             type: 'marriage',
             date: marriages[0].date,  // Date de la première cérémonie

@@ -1,6 +1,6 @@
 {
   "name": "@fbracq/read-gedcom-geneafan",
-  "version": "0.3.9",
+  "version": "0.2.23",
   "description": "Parser GEDCOM optimisé pour GeneaFan avec compression avancée et extraction de relations directes",
   "main": "src/index.js",
   "type": "module",
@@ -24,7 +24,6 @@
     "url": "private"
   },
   "dependencies": {
-    "@fbracq/read-gedcom-geneafan": "^0.3.6",
     "read-gedcom": "^0.3.2"
   },
   "engines": {
