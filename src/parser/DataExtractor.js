@@ -50,6 +50,11 @@ export class DataExtractor {
             metadata: {}
         };
         
+        // IMPORTANT: Extraire métadonnées EN PREMIER pour configurer le format PLAC
+        this._log('Extraction des métadonnées...');
+        result.metadata = this._extractMetadata(rootSelection);
+        
+        // Maintenant que le format PLAC est configuré, extraire les individus
         this._log('Extraction optimisée des individus avec relations directes...');
         result.individuals = await this._extractIndividualsOptimized(rootSelection);
         
@@ -75,9 +80,6 @@ export class DataExtractor {
         
         this._log('Extraction des familles...');
         result.families = await this.familyExtractor.extractFamilies(rootSelection);
-        
-        this._log('Extraction des métadonnées...');
-        result.metadata = this._extractMetadata(rootSelection);
         
         return result;
     }
