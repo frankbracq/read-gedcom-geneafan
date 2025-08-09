@@ -206,19 +206,29 @@ export function parsePlaceWithSubdivision(placeString) {
         const parts = placeString.split(',').map(part => part.trim());
         
         // Le dernier champ correspond à "Subdivision" selon le format standard GEDCOM
-        const subdivisionIndex = Math.min(parts.length - 1, placFormatCache.length - 1);
+        const subdivisionIndex = placFormatCache.length - 1; // Index de "Subdivision" dans le format
         
-        // Extraire la subdivision si elle existe et n'est pas vide
+        // Extraire la subdivision en fusionnant les parties excédentaires
         let subdivision = null;
-        if (subdivisionIndex >= 0 && parts[subdivisionIndex] && parts[subdivisionIndex] !== '') {
-            // Vérifier que c'est bien le champ "Subdivision" dans le format
-            const fieldName = placFormatCache[subdivisionIndex]?.toLowerCase();
-            if (fieldName && fieldName.includes('subdivision')) {
-                subdivision = parts[subdivisionIndex];
-            } else if (subdivisionIndex === parts.length - 1 && parts[subdivisionIndex]) {
-                // Fallback: si dernier champ non-vide, considérer comme subdivision
-                subdivision = parts[subdivisionIndex];
+        
+        // Vérifier que le dernier champ du format est bien "Subdivision"
+        const lastFieldName = placFormatCache[subdivisionIndex]?.toLowerCase();
+        if (lastFieldName && lastFieldName.includes('subdivision') && subdivisionIndex === placFormatCache.length - 1) {
+            // Si subdivision est le dernier champ, ignorer les virgules internes
+            // Tout ce qui vient à partir de l'index subdivision appartient à la subdivision
+            const subdivisionContent = parts.slice(subdivisionIndex).join(', ').trim();
+            if (subdivisionContent && subdivisionContent !== '') {
+                subdivision = subdivisionContent;
             }
+        } else if (parts.length > placFormatCache.length) {
+            // Fallback: si plus de parties que de champs format, prendre les excédentaires
+            const excessParts = parts.slice(placFormatCache.length).filter(part => part && part !== '');
+            if (excessParts.length > 0) {
+                subdivision = excessParts.join(', ');
+            }
+        } else if (subdivisionIndex >= 0 && subdivisionIndex < parts.length && parts[subdivisionIndex] && parts[subdivisionIndex] !== '') {
+            // Cas normal: une seule partie subdivision
+            subdivision = parts[subdivisionIndex];
         }
         
         return {
@@ -231,6 +241,68 @@ export function parsePlaceWithSubdivision(placeString) {
         logger.debug(MODULE, `Erreur parsing subdivision pour "${placeString}": ${error.message}`);
         return { normalizedPlace, subdivision: null, fullPlace: placeString };
     }
+}
+
+/**
+ * 🆕 Détecte si une subdivision contient des informations descriptives/contextuelles
+ * plutôt que purement géographiques
+ * @param {string} subdivision - Contenu de la subdivision
+ * @returns {boolean} - true si informative (à traiter comme note)
+ * 
+ * @example
+ * isInformativeSubdivision("75016") // → false (géographique)
+ * isInformativeSubdivision("Ecole Polytechnique : promo 1952") // → true (informatif)
+ * isInformativeSubdivision("à l'Ecole Polytechnique, à partir du 1/10/1952") // → true (informatif)
+ */
+export function isInformativeSubdivision(subdivision) {
+    if (!subdivision || typeof subdivision !== 'string') return false;
+    
+    const text = subdivision.toLowerCase().trim();
+    
+    // Patterns géographiques (à garder comme subdivision)
+    const geographicPatterns = [
+        /^\d{5}$/, // Code postal français (75016)
+        /^\d{1,2}[èe]?me?$/, // Arrondissement (16ème, 3e)
+        /^arrondissement/i,
+        /^quartier/i,
+        /^district/i
+    ];
+    
+    // Si match pattern géographique, ce n'est PAS informatif
+    for (const pattern of geographicPatterns) {
+        if (pattern.test(text)) {
+            return false;
+        }
+    }
+    
+    // Patterns informatifs (à traiter comme notes)
+    const informativePatterns = [
+        /école|ecole|school|université|university|college|lycée|faculté/i,
+        /hôpital|hospital|clinique|maternité|sanatorium/i,
+        /église|church|synagogue|temple|cathédrale|basilique|chapel/i,
+        /promo|promotion|classe/i,
+        /à partir|depuis|from|until|jusqu['']/i,
+        /:\s*\d{4}/, // ": 1952" (année de promotion)
+        /,\s*\d{1,2}\/\d{1,2}\/\d{4}/, // ", 1/10/1952" (date)
+        /(caserne|base|fort|regiment)/i,
+        /(entreprise|société|compagnie|usine|factory)/i,
+        /mairie|préfecture|tribunal|courthouse/i
+    ];
+    
+    // Si match pattern informatif, c'est informatif
+    for (const pattern of informativePatterns) {
+        if (pattern.test(text)) {
+            return true;
+        }
+    }
+    
+    // Heuristique : plus de 20 caractères ou contient ":" = probablement informatif
+    if (text.length > 20 || text.includes(':')) {
+        return true;
+    }
+    
+    // Par défaut, traiter comme géographique
+    return false;
 }
 
 /**

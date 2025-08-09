@@ -10,6 +10,7 @@ import { MediaExtractor } from './extractors/MediaExtractor.js';
 import { NoteExtractor } from './extractors/NoteExtractor.js';
 import { AttributeExtractor } from './extractors/AttributeExtractor.js';
 import { SourceExtractor } from './extractors/SourceExtractor.js';
+import { setPlacFormat } from '../utils/geoUtils.js';
 
 export class DataExtractor {
     constructor(options = {}) {
@@ -236,6 +237,9 @@ export class DataExtractor {
                     const form = placeHierarchy.get('FORM');
                     if (form && form.length > 0) {
                         metadata.placeHierarchy = form.value()[0];
+                        // Configurer le format PLAC pour les extracteurs
+                        setPlacFormat(metadata.placeHierarchy);
+                        this._log(`Format PLAC configuré: ${metadata.placeHierarchy}`);
                     }
                 }
                 
@@ -256,6 +260,14 @@ export class DataExtractor {
                 if (copyright && copyright.length > 0) {
                     metadata.copyright = copyright.value()[0];
                 }
+            }
+            
+            // Fallback : configurer format PLAC par défaut si non défini
+            if (!metadata.placeHierarchy) {
+                const defaultPlacFormat = 'Town, Area code, County, Region, Country, Subdivision';
+                metadata.placeHierarchy = defaultPlacFormat;
+                setPlacFormat(defaultPlacFormat);
+                this._log(`Format PLAC par défaut configuré: ${defaultPlacFormat}`);
             }
             
             // Statistics

@@ -8,7 +8,7 @@
  * - Événements personnalisés
  */
 
-import { parsePlaceWithSubdivision } from '../../utils/geoUtils.js';
+import { parsePlaceWithSubdivision, isInformativeSubdivision } from '../../utils/geoUtils.js';
 
 export class EventExtractor {
     constructor(options = {}) {
@@ -98,6 +98,25 @@ export class EventExtractor {
             // Données spécifiques selon le type
             if (baseType === 'custom') {
                 eventData.customType = this.extractCustomEventType(event);
+            }
+            
+            // 🆕 Traitement intelligent des subdivisions
+            if (eventData.place && eventData.place.subdivision) {
+                if (isInformativeSubdivision(eventData.place.subdivision)) {
+                    // Subdivision informative → créer une note d'événement
+                    const subdivisionNote = {
+                        type: 'embedded',
+                        text: `Lieu précis : ${eventData.place.subdivision}`
+                    };
+                    eventData.notes.push(subdivisionNote);
+                    
+                    // Supprimer la subdivision de l'objet place (elle devient note)
+                    delete eventData.place.subdivision;
+                } else {
+                    // Subdivision géographique → la conserver
+                    eventData.subdivision = eventData.place.subdivision;
+                    delete eventData.place.subdivision;
+                }
             }
             
             events.push(eventData);
@@ -205,8 +224,20 @@ export class EventExtractor {
                         
                         marriage.place = placeData.normalizedPlace || placeString;
                         marriage.fullPlace = placeData.fullPlace;
+                        
+                        // 🆕 Traitement intelligent de la subdivision pour mariages
                         if (placeData.subdivision) {
-                            marriage.subdivision = placeData.subdivision;
+                            if (isInformativeSubdivision(placeData.subdivision)) {
+                                // Subdivision informative → créer une note d'événement
+                                if (!marriage.notes) marriage.notes = [];
+                                marriage.notes.push({
+                                    type: 'embedded',
+                                    text: `Lieu précis du mariage : ${placeData.subdivision}`
+                                });
+                            } else {
+                                // Subdivision géographique → la conserver
+                                marriage.subdivision = placeData.subdivision;
+                            }
                         }
                     }
                     
