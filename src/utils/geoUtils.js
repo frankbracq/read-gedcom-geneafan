@@ -202,45 +202,159 @@ export function parsePlaceWithSubdivision(placeString) {
     }
     
     try {
-        // Parser selon le format PLAC
+        // Utiliser la validation géographique intelligente pour détecter les subdivisions informatives
+        const validationResult = detectInformativeSubdivisionByValidation(placeString);
+        
+        if (validationResult.isInformative) {
+            // Si une partie informative détectée, la traiter comme subdivision
+            return {
+                normalizedPlace,
+                subdivision: validationResult.informativePart || null,
+                fullPlace: placeString,
+                isInformativeSubdivision: true
+            };
+        }
+        
+        // Fallback: logique originale pour extraire subdivision géographique
         const parts = placeString.split(',').map(part => part.trim());
-        
-        // Le dernier champ correspond à "Subdivision" selon le format standard GEDCOM
-        const subdivisionIndex = placFormatCache.length - 1; // Index de "Subdivision" dans le format
-        
-        // Extraire la subdivision en fusionnant les parties excédentaires
+        const subdivisionIndex = placFormatCache.length - 1;
         let subdivision = null;
         
-        // Vérifier que le dernier champ du format est bien "Subdivision"
         const lastFieldName = placFormatCache[subdivisionIndex]?.toLowerCase();
         if (lastFieldName && lastFieldName.includes('subdivision') && subdivisionIndex === placFormatCache.length - 1) {
-            // Si subdivision est le dernier champ, ignorer les virgules internes
-            // Tout ce qui vient à partir de l'index subdivision appartient à la subdivision
             const subdivisionContent = parts.slice(subdivisionIndex).join(', ').trim();
             if (subdivisionContent && subdivisionContent !== '') {
                 subdivision = subdivisionContent;
             }
         } else if (parts.length > placFormatCache.length) {
-            // Fallback: si plus de parties que de champs format, prendre les excédentaires
             const excessParts = parts.slice(placFormatCache.length).filter(part => part && part !== '');
             if (excessParts.length > 0) {
                 subdivision = excessParts.join(', ');
             }
         } else if (subdivisionIndex >= 0 && subdivisionIndex < parts.length && parts[subdivisionIndex] && parts[subdivisionIndex] !== '') {
-            // Cas normal: une seule partie subdivision
             subdivision = parts[subdivisionIndex];
         }
         
         return {
             normalizedPlace,
             subdivision: subdivision || null,
-            fullPlace: placeString
+            fullPlace: placeString,
+            isInformativeSubdivision: subdivision ? isInformativeSubdivision(subdivision) : false
         };
         
     } catch (error) {
         logger.debug(MODULE, `Erreur parsing subdivision pour "${placeString}": ${error.message}`);
         return { normalizedPlace, subdivision: null, fullPlace: placeString };
     }
+}
+
+/**
+ * 🆕 Valide si un champ géographique semble cohérent selon sa position dans le format PLAC
+ * @param {string} value - Valeur à valider
+ * @param {string} fieldType - Type de champ (town, areacode, county, region, country, subdivision)
+ * @returns {boolean} - true si valide géographiquement
+ */
+function isValidGeographicField(value, fieldType) {
+    if (!value || value === '') return true; // Champs vides acceptés
+    
+    const text = value.toLowerCase().trim();
+    
+    switch (fieldType) {
+        case 'areacode':
+            // Code postal : 5 chiffres ou format international
+            return /^\d{4,6}$/.test(text) || text === '?';
+            
+        case 'region':
+            // Régions françaises connues ou patterns typiques
+            const frenchRegions = [
+                'île-de-france', 'provence-alpes-côte d\'azur', 'auvergne-rhône-alpes',
+                'occitanie', 'nouvelle-aquitaine', 'grand est', 'hauts-de-france',
+                'normandie', 'centre-val de loire', 'bourgogne-franche-comté',
+                'bretagne', 'pays de la loire', 'corse'
+            ];
+            return frenchRegions.includes(text) || 
+                   /région|province|state|county/i.test(text) ||
+                   text === '?';
+                   
+        case 'country':
+            // Pays connus ou formats typiques
+            const countries = ['france', 'belgium', 'switzerland', 'italy', 'spain', 'germany', 'uk'];
+            return countries.includes(text) || 
+                   text.length <= 15 && !/école|hôpital|église|promo|à partir/i.test(text) ||
+                   text === '?';
+                   
+        case 'subdivision':
+            // Pour subdivision, on utilise les patterns informatifs
+            return !isInformativeSubdivision(value);
+            
+        default:
+            // Town, county : pas de validation stricte
+            return true;
+    }
+}
+
+/**
+ * 🆕 Détecte les subdivisions informatives par validation géographique progressive
+ * Utilise le format PLAC pour valider la cohérence géographique de gauche à droite
+ * @param {string} placeString - Chaîne lieu complète
+ * @returns {{isInformative: boolean, splitIndex: number, geographicPart: string, informativePart: string}}
+ */
+export function detectInformativeSubdivisionByValidation(placeString) {
+    if (!placFormatCache || placFormatCache.length === 0) {
+        return { isInformative: false, splitIndex: -1, geographicPart: placeString, informativePart: '' };
+    }
+    
+    const parts = placeString.split(',').map(part => part.trim());
+    const formatFields = placFormatCache.map(f => f.toLowerCase().trim());
+    
+    // Si pas plus de parties que le format, pas de subdivision informative
+    if (parts.length <= formatFields.length) {
+        return { isInformative: false, splitIndex: -1, geographicPart: placeString, informativePart: '' };
+    }
+    
+    // Validation progressive de gauche à droite
+    for (let i = 0; i < formatFields.length && i < parts.length; i++) {
+        const fieldType = formatFields[i];
+        const value = parts[i];
+        
+        // Mapper les noms de champs aux types de validation
+        let validationType = 'default';
+        if (fieldType.includes('code') || fieldType.includes('postal')) validationType = 'areacode';
+        else if (fieldType.includes('region') || fieldType.includes('état')) validationType = 'region';
+        else if (fieldType.includes('country') || fieldType.includes('pays')) validationType = 'country';
+        else if (fieldType.includes('subdivision')) validationType = 'subdivision';
+        
+        // Si champ invalide géographiquement, marquer comme début de la partie informative
+        if (!isValidGeographicField(value, validationType)) {
+            const geographicPart = parts.slice(0, i).join(', ');
+            const informativePart = parts.slice(i).join(', ');
+            return {
+                isInformative: true,
+                splitIndex: i,
+                geographicPart: geographicPart,
+                informativePart: informativePart
+            };
+        }
+    }
+    
+    // Si toutes les parties du format sont valides, vérifier les parties excédentaires
+    if (parts.length > formatFields.length) {
+        const excessParts = parts.slice(formatFields.length);
+        const hasInformativeContent = excessParts.some(part => isInformativeSubdivision(part));
+        
+        if (hasInformativeContent) {
+            const geographicPart = parts.slice(0, formatFields.length).join(', ');
+            const informativePart = excessParts.join(', ');
+            return {
+                isInformative: true,
+                splitIndex: formatFields.length,
+                geographicPart: geographicPart,
+                informativePart: informativePart
+            };
+        }
+    }
+    
+    return { isInformative: false, splitIndex: -1, geographicPart: placeString, informativePart: '' };
 }
 
 /**

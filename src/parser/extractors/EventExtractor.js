@@ -102,7 +102,12 @@ export class EventExtractor {
             
             // 🆕 Traitement intelligent des subdivisions
             if (eventData.place && eventData.place.subdivision) {
-                if (isInformativeSubdivision(eventData.place.subdivision)) {
+                // Utiliser le flag isInformativeSubdivision du parsing si disponible
+                const isInformative = eventData.place.isInformativeSubdivision !== undefined ? 
+                    eventData.place.isInformativeSubdivision : 
+                    isInformativeSubdivision(eventData.place.subdivision);
+                
+                if (isInformative) {
                     // Subdivision informative → créer une note d'événement
                     const subdivisionNote = {
                         type: 'embedded',
@@ -227,7 +232,12 @@ export class EventExtractor {
                         
                         // 🆕 Traitement intelligent de la subdivision pour mariages
                         if (placeData.subdivision) {
-                            if (isInformativeSubdivision(placeData.subdivision)) {
+                            // Utiliser le flag isInformativeSubdivision du parsing si disponible
+                            const isInformative = placeData.isInformativeSubdivision !== undefined ? 
+                                placeData.isInformativeSubdivision : 
+                                isInformativeSubdivision(placeData.subdivision);
+                            
+                            if (isInformative) {
                                 // Subdivision informative → créer une note d'événement
                                 if (!marriage.notes) marriage.notes = [];
                                 marriage.notes.push({
