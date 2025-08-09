@@ -365,87 +365,248 @@ export class EventExtractor {
         // Parser le lieu avec subdivision
         const placeData = parsePlaceWithSubdivision(placeValue);
         
-        // Structure temporaire pour transporter coordonnées ET subdivision
-        // Note: Cet objet sera utilisé uniquement pendant l'extraction
-        // Les coordonnées ne seront PAS stockées dans le cache individuel final
+        // Structure enrichie avec données PLAC complètes via API read-gedcom
         const enrichedPlaceData = {
             value: placeData.normalizedPlace || placeValue, // Lieu normalisé
             fullPlace: placeData.fullPlace, // Lieu complet original
             subdivision: placeData.subdivision || null, // Subdivision (Synagogue, École, etc.)
             isInformativeSubdivision: placeData.isInformativeSubdivision || false, // Flag validation géographique
-            // Propriétés temporaires pour transport vers familyTownsStore
+            // Coordonnées temporaires pour transport vers familyTownsStore
             _tempLatitude: null,
-            _tempLongitude: null
+            _tempLongitude: null,
+            // 🆕 Données PLAC enrichies via API read-gedcom
+            _placeForm: null,        // Format de découpe PLAC
+            _placeNotes: [],         // Notes spécifiques au lieu
+            _placeSources: []        // Sources associées au lieu
         };
         
-        // Tentative d'extraction des coordonnées via API read-gedcom
+        // 🆕 Extraction complète via API read-gedcom
         try {
-            // Obtenir le premier enregistrement de lieu
             const placeRecords = placeSelection.arraySelect();
             if (placeRecords && placeRecords.length > 0) {
                 const placeRecord = placeRecords[0];
                 
-                // Méthode 1 : Utiliser getCoordinates si disponible (API native)
+                // === COORDONNÉES (améliorées) ===
+                
+                // Méthode 1 : API native getCoordinates()
                 if (typeof placeRecord.getCoordinates === 'function') {
                     const coords = placeRecord.getCoordinates();
                     if (coords.length > 0) {
                         const coordsValue = coords.value()[0];
                         if (coordsValue) {
-                            // Format possible: "lat,lon" ou objet
-                            const parts = String(coordsValue).split(',');
-                            if (parts.length === 2) {
-                                const lat = parseFloat(parts[0].trim());
-                                const lon = parseFloat(parts[1].trim());
-                                if (!isNaN(lat) && !isNaN(lon)) {
-                                    enrichedPlaceData._tempLatitude = lat;
-                                    enrichedPlaceData._tempLongitude = lon;
-                                    this.log(`Coordonnées getCoordinates() pour "${placeValue}": ${lat}, ${lon}`);
-                                }
+                            const coordsParsed = this._parseCoordinates(coordsValue);
+                            if (coordsParsed.latitude && coordsParsed.longitude) {
+                                enrichedPlaceData._tempLatitude = coordsParsed.latitude;
+                                enrichedPlaceData._tempLongitude = coordsParsed.longitude;
+                                this.log(`Coordonnées getCoordinates() pour "${placeValue}": ${coordsParsed.latitude}, ${coordsParsed.longitude}`);
                             }
                         }
                     }
                 }
                 
-                // Méthode 2 : Accès via get('MAP') - API générique
+                // Méthode 2 : MAP/LATI/LONG (toutes variantes)
                 if (enrichedPlaceData._tempLatitude === null && typeof placeRecord.get === 'function') {
-                    const mapSelection = placeRecord.get('MAP');
-                    if (mapSelection && mapSelection.length > 0) {
-                        const mapRecords = mapSelection.arraySelect();
-                        if (mapRecords && mapRecords.length > 0) {
-                            const mapRecord = mapRecords[0];
-                            
-                            // Extraire LATI et LONG via get()
-                            const latiSelection = mapRecord.get('LATI');
-                            const longSelection = mapRecord.get('LONG');
-                            
-                            if (latiSelection && latiSelection.length > 0 && 
-                                longSelection && longSelection.length > 0) {
-                                
-                                const latValue = latiSelection.value()[0];
-                                const lonValue = longSelection.value()[0];
-                                
-                                if (latValue && lonValue) {
-                                    const lat = parseFloat(latValue);
-                                    const lon = parseFloat(lonValue);
-                                    
-                                    if (!isNaN(lat) && !isNaN(lon)) {
-                                        enrichedPlaceData._tempLatitude = lat;
-                                        enrichedPlaceData._tempLongitude = lon;
-                                    }
-                                }
+                    const coords = this._extractCoordinatesFromMAP(placeRecord);
+                    if (coords.latitude && coords.longitude) {
+                        enrichedPlaceData._tempLatitude = coords.latitude;
+                        enrichedPlaceData._tempLongitude = coords.longitude;
+                        this.log(`Coordonnées MAP pour "${placeValue}": ${coords.latitude}, ${coords.longitude}`);
+                    }
+                }
+                
+                // === 🆕 NOUVELLES DONNÉES PLAC ===
+                
+                // Format de découpe PLAC
+                try {
+                    const formSelection = placeRecord.get('FORM');
+                    if (formSelection && formSelection.length > 0) {
+                        enrichedPlaceData._placeForm = formSelection.value()[0];
+                    }
+                } catch (error) { /* Ignore */ }
+                
+                // Notes spécifiques au lieu
+                try {
+                    const notesSelection = placeRecord.get('NOTE');
+                    if (notesSelection && notesSelection.length > 0) {
+                        notesSelection.arraySelect().forEach(note => {
+                            const noteText = this.extractNoteText(note);
+                            if (noteText) {
+                                enrichedPlaceData._placeNotes.push({
+                                    type: 'embedded',
+                                    text: noteText
+                                });
                             }
-                        }
+                        });
+                    }
+                } catch (error) { /* Ignore */ }
+                
+                // Sources associées au lieu
+                try {
+                    const sourcesSelection = placeRecord.get('SOUR');
+                    if (sourcesSelection && sourcesSelection.length > 0) {
+                        sourcesSelection.arraySelect().forEach(source => {
+                            const sourcePointer = source.value()[0];
+                            if (sourcePointer) {
+                                enrichedPlaceData._placeSources.push({
+                                    pointer: sourcePointer
+                                });
+                            }
+                        });
+                    }
+                } catch (error) { /* Ignore */ }
+                
+            }
+        } catch (error) {
+            this.log(`Erreur extraction PLAC enrichie pour "${placeValue}": ${error.message}`);
+        }
+        
+        return enrichedPlaceData;
+    }
+    
+    /**
+     * 🆕 Parse coordonnées dans tous les formats possibles
+     * @private
+     */
+    _parseCoordinates(coordsValue) {
+        if (!coordsValue) return { latitude: null, longitude: null };
+        
+        try {
+            const coordsStr = String(coordsValue).trim();
+            
+            // Format 1: "lat,lon"
+            if (coordsStr.includes(',')) {
+                const parts = coordsStr.split(',');
+                if (parts.length === 2) {
+                    const lat = parseFloat(parts[0].trim());
+                    const lon = parseFloat(parts[1].trim());
+                    if (!isNaN(lat) && !isNaN(lon)) {
+                        return { latitude: lat, longitude: lon };
+                    }
+                }
+            }
+            
+            // Format 2: "lat lon" (espace)
+            if (coordsStr.includes(' ')) {
+                const parts = coordsStr.split(/\s+/);
+                if (parts.length === 2) {
+                    const lat = parseFloat(parts[0]);
+                    const lon = parseFloat(parts[1]);
+                    if (!isNaN(lat) && !isNaN(lon)) {
+                        return { latitude: lat, longitude: lon };
+                    }
+                }
+            }
+            
+            // Format 3: Degrés-minutes-secondes (à implémenter si nécessaire)
+            // "48°51'30\"N 2°17'40\"E"
+            
+        } catch (error) {
+            this.log(`Erreur parsing coordonnées "${coordsValue}": ${error.message}`);
+        }
+        
+        return { latitude: null, longitude: null };
+    }
+    
+    /**
+     * 🆕 Extrait coordonnées depuis MAP/LATI/LONG avec tous formats
+     * @private
+     */
+    _extractCoordinatesFromMAP(placeRecord) {
+        try {
+            const mapSelection = placeRecord.get('MAP');
+            if (!mapSelection || mapSelection.length === 0) {
+                return { latitude: null, longitude: null };
+            }
+            
+            const mapRecords = mapSelection.arraySelect();
+            if (!mapRecords || mapRecords.length === 0) {
+                return { latitude: null, longitude: null };
+            }
+            
+            const mapRecord = mapRecords[0];
+            
+            // Extraire LATI et LONG
+            const latiSelection = mapRecord.get('LATI');
+            const longSelection = mapRecord.get('LONG');
+            
+            if (latiSelection && latiSelection.length > 0 && 
+                longSelection && longSelection.length > 0) {
+                
+                const latValue = latiSelection.value()[0];
+                const lonValue = longSelection.value()[0];
+                
+                if (latValue && lonValue) {
+                    // Parser les coordonnées (supporte différents formats)
+                    const lat = this._parseCoordinate(latValue);
+                    const lon = this._parseCoordinate(lonValue);
+                    
+                    if (lat !== null && lon !== null) {
+                        return { latitude: lat, longitude: lon };
                     }
                 }
             }
         } catch (error) {
-            // En cas d'erreur, on retourne quand même le lieu sans coordonnées
-            this.log(`Impossible d'extraire coordonnées pour "${placeValue}": ${error.message}`);
+            this.log(`Erreur extraction MAP: ${error.message}`);
         }
         
-        // IMPORTANT : Retourner l'objet complet TEMPORAIREMENT avec subdivision
-        // CacheBuilder devra extraire les coordonnées et ne stocker que la valeur + subdivision
-        return enrichedPlaceData;
+        return { latitude: null, longitude: null };
+    }
+    
+    /**
+     * 🆕 Parse une coordonnée individuelle (latitude ou longitude)
+     * @private
+     */
+    _parseCoordinate(coordValue) {
+        if (!coordValue) return null;
+        
+        try {
+            const coordStr = String(coordValue).trim();
+            
+            // Format 1: Avec préfixes directionnels "N48.853410", "E2.348800", "S12.345", "W1.234"
+            const directionMatch = coordStr.match(/^([NSEW])(.+)$/);
+            if (directionMatch) {
+                const direction = directionMatch[1];
+                const value = parseFloat(directionMatch[2]);
+                
+                if (!isNaN(value)) {
+                    // Appliquer le signe selon la direction
+                    if (direction === 'S' || direction === 'W') {
+                        return -Math.abs(value); // Sud et Ouest sont négatifs
+                    } else {
+                        return Math.abs(value); // Nord et Est sont positifs
+                    }
+                }
+            }
+            
+            // Format 2: Décimal simple "48.8566"
+            const decimal = parseFloat(coordStr);
+            if (!isNaN(decimal)) {
+                return decimal;
+            }
+            
+            // Format 3: Avec suffixes directionnels "48.853410N", "2.348800E"
+            const suffixMatch = coordStr.match(/^(.+)([NSEW])$/);
+            if (suffixMatch) {
+                const value = parseFloat(suffixMatch[1]);
+                const direction = suffixMatch[2];
+                
+                if (!isNaN(value)) {
+                    if (direction === 'S' || direction === 'W') {
+                        return -Math.abs(value);
+                    } else {
+                        return Math.abs(value);
+                    }
+                }
+            }
+            
+            // Format 4: Degrés-minutes-secondes "48°51'30\"N" ou "48D51M30S"
+            // TODO: Implémenter si nécessaire (regex plus complexe)
+            
+        } catch (error) {
+            this.log(`Erreur parsing coordonnée "${coordValue}": ${error.message}`);
+        }
+        
+        return null;
     }
 
     /**
