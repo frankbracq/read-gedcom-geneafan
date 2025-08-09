@@ -95,6 +95,10 @@ export class EventExtractor {
                 multimedia: this.options.extractMedia ? this.extractEventMultimedia(event) : []
             };
             
+            // 🆕 Extraction standardisée TYPE pour TOUS les événements (GEDCOM 5.5)
+            // Mapping EVENT_DETAIL → TYPE <EVENT_DESCRIPTOR>
+            eventData.eventType = this.extractEventType(event);
+            
             // Données spécifiques selon le type
             if (baseType === 'custom') {
                 eventData.customType = this.extractCustomEventType(event);
@@ -472,6 +476,37 @@ export class EventExtractor {
     }
 
     /**
+     * 🆕 Extrait le TYPE standardisé d'un événement selon GEDCOM 5.5 EVENT_DETAIL
+     * @param {Object} eventSelection - Sélection read-gedcom de l'événement
+     * @returns {string|null} Type de l'événement ou null
+     */
+    extractEventType(eventSelection) {
+        // Mapping EVENT_DETAIL → TYPE <EVENT_DESCRIPTOR>
+        try {
+            // Méthode 1: Utiliser getType() si disponible (API native)
+            if (typeof eventSelection.getType === 'function') {
+                const typeSelection = eventSelection.getType();
+                if (typeSelection && typeSelection.length > 0) {
+                    const typeValue = typeSelection.value();
+                    if (typeValue && typeValue.length > 0) {
+                        return typeValue[0] || null;
+                    }
+                }
+            }
+            
+            // Méthode 2: Fallback via get('TYPE') - API générique
+            const typeSelection = eventSelection.get('TYPE');
+            if (typeSelection && typeSelection.length > 0) {
+                const typeValue = typeSelection.value()[0];
+                return typeValue || null;
+            }
+        } catch (error) {
+            this.log(`Erreur extraction TYPE événement: ${error.message}`);
+        }
+        return null;
+    }
+
+    /**
      * Extrait le type personnalisé d'un événement EVEN
      * @param {Object} eventSelection - Sélection read-gedcom de l'événement
      * @returns {string|null} Type personnalisé ou null
@@ -789,6 +824,7 @@ export class EventExtractor {
         }
         return false;
     }
+
 
     /**
      * Log si mode verbose

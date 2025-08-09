@@ -189,6 +189,9 @@ export function compressEvent(event) {
     if (event.occupation) metadata.o = event.occupation;
     if (event.eventAttendees) metadata.a = event.eventAttendees;
     
+    // 🆕 Ajout eventType standardisé (GEDCOM 5.5)
+    if (event.eventType) metadata.et = event.eventType;
+    
     // Ajouter metadata seulement si non vide
     if (Object.keys(metadata).length > 0) {
         compressed.m = metadata;
@@ -234,6 +237,9 @@ export function decompressEvent(compressedEvent) {
         if (metadata.c) event.childId = metadata.c;
         if (metadata.o) event.occupation = metadata.o;
         if (metadata.a) event.eventAttendees = metadata.a;
+        
+        // 🆕 Décompression eventType standardisé
+        if (metadata.et) event.eventType = metadata.et;
     }
     
     return event;

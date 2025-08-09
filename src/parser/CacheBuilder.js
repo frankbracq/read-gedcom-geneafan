@@ -310,6 +310,11 @@ export class CacheBuilder {
             metadata.ct = event.customType;
         }
         
+        // 🆕 Ajouter eventType standardisé (GEDCOM 5.5 EVENT_DETAIL)
+        if (event.eventType) {
+            metadata.et = event.eventType;
+        }
+        
         // [NOUVEAU] Ajouter les IDs de notes si présents
         if (event.noteIds && event.noteIds.length > 0) {
             metadata.n = event.noteIds;
