@@ -801,7 +801,7 @@ export class CacheBuilder {
             for (const sample of Array.from(data.samples)) {
                 const components = await extractPlaceComponents(sample);
                 
-                // Enrichir avec les données les plus complètes
+                // Enrichir avec les données les plus complètes (préférer les valeurs non-nulles)
                 if (components.town && !bestComponents.town) bestComponents.town = components.town;
                 if (components.postalCode && !bestComponents.postalCode) bestComponents.postalCode = components.postalCode;
                 if (components.department && !bestComponents.department) bestComponents.department = components.department;
@@ -809,13 +809,27 @@ export class CacheBuilder {
                 if (components.country && !bestComponents.country) bestComponents.country = components.country;
             }
             
-            // Construire townDisplay avec contexte
+            // Construire townDisplay avec contexte intelligent
             const townName = bestComponents.town || key;
             let townDisplay = townName;
             
-            if (bestComponents.department) {
+            // Cas spécial : arrondissements parisiens
+            if (townName === 'Paris' && bestComponents.postalCode && bestComponents.postalCode.startsWith('75')) {
+                const arrondissement = bestComponents.postalCode.slice(2); // 75016 → 16
+                // Ignorer 75000 (code postal générique) et les codes comme 000
+                if (arrondissement && arrondissement !== '00' && arrondissement !== '000' && parseInt(arrondissement) > 0) {
+                    const arrNum = parseInt(arrondissement);
+                    townDisplay = `${townName} (${arrNum}e)`;
+                } else {
+                    townDisplay = townName; // Paris générique
+                }
+            }
+            // Cas général : département si différent de la ville
+            else if (bestComponents.department && bestComponents.department !== townName) {
                 townDisplay = `${townName} (${bestComponents.department})`;
-            } else if (bestComponents.country && bestComponents.country !== 'France') {
+            } 
+            // Cas international : pays si différent de France
+            else if (bestComponents.country && bestComponents.country !== 'France') {
                 townDisplay = `${townName} (${bestComponents.country})`;
             }
             
@@ -827,6 +841,8 @@ export class CacheBuilder {
                 latitude: data.latitude !== null ? String(data.latitude) : "",
                 longitude: data.longitude !== null ? String(data.longitude) : "",
                 departement: bestComponents.department || "",
+                region: bestComponents.region || "",               // 🆕 Ajout région
+                postalCode: bestComponents.postalCode || "",       // 🆕 Ajout code postal
                 country: bestComponents.country || "",
                 departementColor: "",                  // Sera enrichi par geneafan
                 countryColor: "",                      // Sera enrichi par geneafan
